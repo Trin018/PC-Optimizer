@@ -23,7 +23,9 @@ namespace PCOptimizer
 {
     public partial class MainWindow : Window
     {
-        private string currentVersion = "14.5";
+        private string currentVersion = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version != null 
+            ? $"{System.Reflection.Assembly.GetExecutingAssembly().GetName().Version.Major}.{System.Reflection.Assembly.GetExecutingAssembly().GetName().Version.Minor}.{System.Reflection.Assembly.GetExecutingAssembly().GetName().Version.Build}" 
+            : "15.0.0";
         private string githubRepoApi = "https://api.github.com/repos/Trin018/PC-Optimizer/releases/latest";
 
         private HardwareMonitorService _hwMonitor = new HardwareMonitorService();
@@ -734,40 +736,35 @@ namespace PCOptimizer
                 string tempDir = System.IO.Path.GetTempPath();
                 string batUpdater = System.IO.Path.Combine(tempDir, "update_pcopt.bat");
 
-                if (downloadUrl.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+                string tempZip = System.IO.Path.Combine(tempDir, "pcopt_new.zip");
+                string extractDir = System.IO.Path.Combine(tempDir, "pcopt_extracted");
+
+                using (WebClient wc = new WebClient()) { wc.DownloadFile(downloadUrl, tempZip); }
+
+                // Script que aguarda ativamente até o processo fechar por completo
+                string batContent = 
+                    "@echo off\r\n" +
+                    ":wait\r\n" +
+                    "taskkill /f /im PC_Optimizer.exe >nul 2>&1\r\n" +
+                    "timeout /t 1 /nobreak >nul\r\n" +
+                    "tasklist | find /i \"PC_Optimizer.exe\" >nul\r\n" +
+                    "if not errorlevel 1 goto wait\r\n" +
+                    $"powershell -Command \"Expand-Archive -Path '{tempZip}' -DestinationPath '{extractDir}' -Force\"\r\n" +
+                    $"copy /y \"{extractDir}\\PC_Optimizer.exe\" \"{currentExePath}\"\r\n" +
+                    $"start \"\" \"{currentExePath}\"\r\n" +
+                    $"del \"{tempZip}\" >nul 2>&1\r\n" +
+                    $"rd /s /q \"{extractDir}\" >nul 2>&1\r\n" +
+                    "del \"%~f0\"";
+
+                File.WriteAllText(batUpdater, batContent);
+
+                ProcessStartInfo psi = new ProcessStartInfo(batUpdater)
                 {
-                    string tempZip = System.IO.Path.Combine(tempDir, "update.zip");
-                    string extractDir = System.IO.Path.Combine(tempDir, "pcopt_extracted");
-
-                    using (WebClient wc = new WebClient()) { wc.DownloadFile(downloadUrl, tempZip); }
-
-                    // Script batch que aguarda o encerramento da app, extrai o ZIP e substitui o executável
-                    string batContent = 
-                        $"@echo off\r\n" +
-                        $"timeout /t 2 /nobreak >nul\r\n" +
-                        $"powershell -Command \"Expand-Archive -Path '{tempZip}' -DestinationPath '{extractDir}' -Force\"\r\n" +
-                        $"copy /y \"{extractDir}\\PC_Optimizer.exe\" \"{currentExePath}\"\r\n" +
-                        $"start \"\" \"{currentExePath}\"\r\n" +
-                        $"del \"{tempZip}\" >nul 2>&1\r\n" +
-                        $"rd /s /q \"{extractDir}\" >nul 2>&1\r\n" +
-                        $"del \"%~f0\"";
-
-                    File.WriteAllText(batUpdater, batContent);
-                }
-                else
-                {
-                    string tempExe = currentExePath + ".new";
-                    using (WebClient wc = new WebClient()) { wc.DownloadFile(downloadUrl, tempExe); }
-
-                    string batContent = 
-                        $"@echo off\r\ntimeout /t 2 /nobreak >nul\r\n" +
-                        $"move /y \"{tempExe}\" \"{currentExePath}\"\r\n" +
-                        $"start \"\" \"{currentExePath}\"\r\ndel \"%~f0\"";
-
-                    File.WriteAllText(batUpdater, batContent);
-                }
-
-                Process.Start(new ProcessStartInfo(batUpdater) { CreateNoWindow = true, UseShellExecute = false });
+                    UseShellExecute = true,
+                    Verb = "runas",
+                    WindowStyle = ProcessWindowStyle.Hidden
+                };
+                Process.Start(psi);
                 Environment.Exit(0);
             }
             catch (Exception ex)

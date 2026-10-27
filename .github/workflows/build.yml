@@ -21,20 +21,20 @@ jobs:
       with:
         dotnet-version: '8.0.x'
 
-    - name: Compilar PC_Optimizer.exe (Single-File)
-      run: dotnet publish PCOptimizer.csproj -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -o ./publish
+    - name: Compilar PC_Optimizer.exe
+      run: dotnet publish PCOptimizer.csproj -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -p:Version=15.0.${{ github.run_number }} -o ./publish
 
     - name: Criar Ficheiro ZIP de Distribuicao
       shell: pwsh
       run: |
-        Compress-Archive -Path ./publish/PC_Optimizer.exe -DestinationPath ./publish/PC_Optimizer_v14.zip
+        Compress-Archive -Path ./publish/PC_Optimizer.exe -DestinationPath ./publish/PC_Optimizer.zip
 
-    - name: Publicar Release no GitHub com ZIP e EXE
+    - name: Publicar Release no GitHub
       uses: softprops/action-gh-release@v2
       with:
         tag_name: v15.0.${{ github.run_number }}
         name: "⚡ PC Optimizer PRO v15.0 (Build #${{ github.run_number }})"
-        body: "Versão completa empacotada em ZIP (evita bloqueios de download direto do Smart App Control)."
+        body: "Versão com auto-updater inteligente e resolução de conflitos de versão."
         files: |
-          ./publish/PC_Optimizer_v15.zip
+          ./publish/PC_Optimizer.zip
           ./publish/PC_Optimizer.exe
