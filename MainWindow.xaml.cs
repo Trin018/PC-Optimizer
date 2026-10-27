@@ -723,7 +723,7 @@ namespace PCOptimizer
         // --- AUTO-UPDATER COM POP-UP AUTOMÁTICO NO ARRANQUE & SUPORTE A ZIP ---
         private void CheckForGitHubReleasesUpdate(bool isManual)
         {
-            if (isManual) Log("🔄 A verificar atualizações no GitHub...");
+            if (isManual) Log("🔄 A procurar atualizações nas Releases do GitHub...");
             Task.Run(() =>
             {
                 try
@@ -736,46 +736,44 @@ namespace PCOptimizer
                         string json = wc.DownloadString(githubRepoApi);
 
                         Match tagMatch = Regex.Match(json, "\"tag_name\"\\s*:\\s*\"([^\"]+)\"");
-                        Match zipMatch = Regex.Match(json, "\"browser_download_url\"\\s*:\\s*\"([^\"]+PC_Optimizer_v14\\.zip)\"");
-                        Match exeMatch = Regex.Match(json, "\"browser_download_url\"\\s*:\\s*\"([^\"]+PC_Optimizer\\.exe)\"");
+                        Match urlMatch = Regex.Match(json, "\"browser_download_url\"\\s*:\\s*\"([^\"]+PC_Optimizer\\.zip)\"");
 
-                        if (tagMatch.Success)
+                        if (tagMatch.Success && urlMatch.Success)
                         {
-                            string remoteTag = tagMatch.Groups[1].Value.Trim();
-                            string downloadUrl = zipMatch.Success ? zipMatch.Groups[1].Value : (exeMatch.Success ? exeMatch.Groups[1].Value : "");
+                            string remoteTagFull = tagMatch.Groups[1].Value.Trim(); // Ex: v15.0.8
+                            string downloadUrl = urlMatch.Groups[1].Value;
 
-                            // Normalizar versões (tirar 'v' e comparar matematicamente)
-                            string rClean = remoteTag.TrimStart('v', 'V').Trim();
-                            string lClean = currentVersion.TrimStart('v', 'V').Trim();
+                            // Limpar a letra 'v' para comparar apenas os números matemáticos (Ex: 15.0.8 vs 14.5)
+                            string remoteClean = remoteTagFull.TrimStart('v', 'V').Trim();
+                            string localClean = currentVersion.TrimStart('v', 'V').Trim();
 
-                            Version.TryParse(rClean, out Version rVer);
-                            Version.TryParse(lClean, out Version lVer);
+                            Version.TryParse(remoteClean, out Version remoteVer);
+                            Version.TryParse(localClean, out Version localVer);
 
-                            // SÓ NOTIFICA SE A VERSÃO DA NUVEM FOR ESTRITAMENTE MAIOR!
-                            bool isNewerAvailable = false;
-                            if (rVer != null && lVer != null)
-                                isNewerAvailable = rVer > lVer;
+                            bool isNewer = false;
+                            if (remoteVer != null && localVer != null)
+                                isNewer = remoteVer > localVer;
                             else
-                                isNewerAvailable = string.Compare(rClean, lClean, StringComparison.OrdinalIgnoreCase) > 0;
+                                isNewer = string.Compare(remoteClean, localClean, StringComparison.OrdinalIgnoreCase) > 0;
 
-                            if (!string.IsNullOrWhiteSpace(downloadUrl) && isNewerAvailable)
+                            if (isNewer)
                             {
                                 Dispatcher.Invoke(() =>
                                 {
-                                    btnUpdate.Content = $"🔔 Atualizar ({remoteTag})!";
+                                    btnUpdate.Content = $"🔔 Atualizar ({remoteTagFull})!";
                                     btnUpdate.Background = new SolidColorBrush(Color.FromRgb(225, 29, 72));
 
-                                    Log($"🚀 [NOVA VERSÃO] Versão {remoteTag} disponível na nuvem!");
+                                    Log($"🚀 [NOVA VERSÃO] Encontrada a versão {remoteTagFull} no GitHub!");
 
                                     MessageBoxResult r = MessageBox.Show(
-                                        $"🔥 Está disponível uma nova atualização do PC Optimizer!\n\nVersão Instalada: {currentVersion}\nVersão Disponível: {remoteTag}\n\nDeseja descarregar e atualizar automaticamente agora?",
-                                        "Nova Atualização Disponível!",
+                                        $"🔥 Está disponível uma nova atualização do PC Optimizer!\n\nVersão Atual: v{currentVersion}\nNova Versão: {remoteTagFull}\n\nDeseja descarregar e atualizar automaticamente agora?",
+                                        "Atualização Automática Disponível",
                                         MessageBoxButton.YesNo,
                                         MessageBoxImage.Information);
 
                                     if (r == MessageBoxResult.Yes)
                                     {
-                                        DownloadAndApplyUpdate(downloadUrl, remoteTag);
+                                        DownloadAndApplyUpdate(downloadUrl, remoteTagFull);
                                     }
                                 });
                             }
@@ -783,10 +781,8 @@ namespace PCOptimizer
                             {
                                 Dispatcher.Invoke(() =>
                                 {
-                                    btnUpdate.Content = "🔄 Procurar Update";
-                                    btnUpdate.Background = new SolidColorBrush(Color.FromRgb(2, 132, 199));
-                                    Log($"✅ O teu PC Optimizer já está na versão mais recente ({currentVersion})!");
-                                    MessageBox.Show($"✅ Já estás a utilizar a versão mais recente ({currentVersion})!\nNão existem atualizações pendentes.", "Tudo Atualizado", MessageBoxButton.OK, MessageBoxImage.Information);
+                                    Log($"✅ O teu PC Optimizer já está na versão mais recente (v{currentVersion})!");
+                                    MessageBox.Show($"✅ Já estás a utilizar a versão mais recente (v{currentVersion})!\nNão existem atualizações pendentes.", "Tudo Atualizado", MessageBoxButton.OK, MessageBoxImage.Information);
                                 });
                             }
                         }
