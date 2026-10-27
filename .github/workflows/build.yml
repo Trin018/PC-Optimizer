@@ -21,20 +21,18 @@ jobs:
       with:
         dotnet-version: '8.0.x'
 
-    - name: Compilar PC_Optimizer.exe
-      run: dotnet publish PCOptimizer.csproj -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -p:Version=15.0.${{ github.run_number }} -o ./publish
+    - name: Compilar Projeto (Formato Transparente sem Falso Positivo)
+      run: dotnet publish PCOptimizer.csproj -c Release -r win-x64 --self-contained false -o ./publish
 
-    - name: Criar Ficheiro ZIP de Distribuicao
+    - name: Criar Ficheiro ZIP
       shell: pwsh
       run: |
-        Compress-Archive -Path ./publish/PC_Optimizer.exe -DestinationPath ./publish/PC_Optimizer.zip
+        Compress-Archive -Path ./publish/* -DestinationPath ./publish/PC_Optimizer.zip
 
     - name: Publicar Release no GitHub
       uses: softprops/action-gh-release@v2
       with:
         tag_name: v15.0.${{ github.run_number }}
-        name: "⚡ PC Optimizer PRO v15.0 (Build #${{ github.run_number }})"
-        body: "Versão com auto-updater inteligente e resolução de conflitos de versão."
-        files: |
-          ./publish/PC_Optimizer.zip
-          ./publish/PC_Optimizer.exe
+        name: "⚡ PC Optimizer PRO (Build #${{ github.run_number }})"
+        body: "Versão limpa sem gatilhos de falso positivo do antivírus."
+        files: ./publish/PC_Optimizer.zip

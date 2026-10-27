@@ -393,15 +393,14 @@ namespace PCOptimizer
             AddCardBtn(ug, "💾 Fazer Backup de Drivers Atuais", "Exporta uma cópia de segurança de todos os drivers instalados no teu PC para C:\\PCOptimizer_Backups\\Drivers.", () => BackupAllSystemDrivers());
             AddCardBtn(ug, "👑 Gravar Jogos VIP (Prioridade Eterna)", "CS2, Valorant, CoD, Fortnite, Apex, Rust e GTA V rodam sempre em Prioridade Alta.", () => RegisterPermanentVipGames(), true);
             AddCardBtn(ug, "⏪ Remover Prioridade Eterna Jogos", "Restaura o comportamento padrão do Windows para os executáveis de jogos.", () => RemovePermanentVipGames());
-            AddCardBtn(ug, "🛡️ Blindar Ficheiro HOSTS (Anti-Spy)", "Bloqueia na raiz os servidores de telemetria e anúncios da Microsoft.", () => ApplyHostsTelemetryBlock());
             AddCardBtn(ug, "🎯 Ecrã 1280x960 (4:3 Stretched CS2)", "Muda instantaneamente para 1280x960 competitivo sem abrir painel da gráfica.", () => ChangeScreenResolution(1280, 960));
             AddCardBtn(ug, "🎯 Ecrã 1440x1080 (4:3 HD Competitivo)", "Muda para 1440x1080 (4:3 esticado em alta definição para CS2/Valorant).", () => ChangeScreenResolution(1440, 1080));
             AddCardBtn(ug, "🖥️ Repor Ecrã 1920x1080 (Full HD)", "Volta o monitor para a resolução padrão Full HD 1920x1080 num clique.", () => ChangeScreenResolution(1920, 1080));
             AddCardBtn(ug, "🖥️ Repor Ecrã 2560x1440 (2K QHD)", "Volta o monitor para a resolução nativa 2K QHD (2560x1440) num clique.", () => ChangeScreenResolution(2560, 1440));
             AddCardBtn(ug, "🔑 Ler Chave Original Windows (BIOS)", "Mostra na consola a tua Product Key original gravada na placa-mãe.", () => ReadBiosWindowsKey());
             AddCardBtn(ug, "⚖️ Calcular Gargalo (CPU vs GPU vs RAM)", "Analisa o equilíbrio entre o teu CPU, Placa Gráfica e memória RAM.", () => CheckUptimeAndBottleneck());
+            AddCardBtn(ug, "🛡️ Limpar Cache DNS", "Esvazia e renova a cache de resolução de rede.", () => RunCmd("ipconfig /flushdns", "Cache DNS limpa!"));
             AddCardBtn(ug, "🎙️ Testar Microfone (Ouvir a Minha Voz)", "Abre o painel de escuta direta do microfone para testar ruído e áudio.", () => RunCmd("control mmsys.cpl,,1", "Painel de Microfone aberto!"));
-            AddCardBtn(ug, "🔓 Limpar Bloqueios Ficheiro HOSTS", "Restaura o ficheiro HOSTS original do Windows.", () => ResetHostsFile());
             AddCardBtn(ug, "⚡ Calibrar Cores e Gama do Monitor", "Abre o calibrador de gama e cores do ecrã (dccw.exe).", () => RunCmd("dccw.exe", "Calibrador aberto!"));
         }
 
@@ -731,45 +730,29 @@ namespace PCOptimizer
         {
             try
             {
-                Log($"⏳ A transferir a versão {newTag} em segundo plano...");
-                string currentExePath = Process.GetCurrentProcess().MainModule.FileName;
+                Log($"⏳ A transferir a versão {newTag}...");
+                string appDir = AppDomain.CurrentDomain.BaseDirectory;
                 string tempDir = System.IO.Path.GetTempPath();
-                string batUpdater = System.IO.Path.Combine(tempDir, "update_pcopt.bat");
+                string zipPath = System.IO.Path.Combine(tempDir, "pcopt_update.zip");
+                string batUpdater = System.IO.Path.Combine(tempDir, "pcopt_installer.bat");
 
-                string tempZip = System.IO.Path.Combine(tempDir, "pcopt_new.zip");
-                string extractDir = System.IO.Path.Combine(tempDir, "pcopt_extracted");
+                using (WebClient wc = new WebClient()) { wc.DownloadFile(downloadUrl, zipPath); }
 
-                using (WebClient wc = new WebClient()) { wc.DownloadFile(downloadUrl, tempZip); }
-
-                // Script que aguarda ativamente até o processo fechar por completo
-                string batContent = 
+                // Script limpo e direto de extração
+                string bat = 
                     "@echo off\r\n" +
-                    ":wait\r\n" +
-                    "taskkill /f /im PC_Optimizer.exe >nul 2>&1\r\n" +
-                    "timeout /t 1 /nobreak >nul\r\n" +
-                    "tasklist | find /i \"PC_Optimizer.exe\" >nul\r\n" +
-                    "if not errorlevel 1 goto wait\r\n" +
-                    $"powershell -Command \"Expand-Archive -Path '{tempZip}' -DestinationPath '{extractDir}' -Force\"\r\n" +
-                    $"copy /y \"{extractDir}\\PC_Optimizer.exe\" \"{currentExePath}\"\r\n" +
-                    $"start \"\" \"{currentExePath}\"\r\n" +
-                    $"del \"{tempZip}\" >nul 2>&1\r\n" +
-                    $"rd /s /q \"{extractDir}\" >nul 2>&1\r\n" +
-                    "del \"%~f0\"";
+                    "timeout /t 2 /nobreak >nul\r\n" +
+                    $"powershell -Command \"Expand-Archive -Path '{zipPath}' -DestinationPath '{appDir}' -Force\"\r\n" +
+                    $"start \"\" \"{System.IO.Path.Combine(appDir, "PC_Optimizer.exe")}\"\r\n" +
+                    $"del \"{zipPath}\" >nul 2>&1";
 
-                File.WriteAllText(batUpdater, batContent);
-
-                ProcessStartInfo psi = new ProcessStartInfo(batUpdater)
-                {
-                    UseShellExecute = true,
-                    Verb = "runas",
-                    WindowStyle = ProcessWindowStyle.Hidden
-                };
-                Process.Start(psi);
+                File.WriteAllText(batUpdater, bat);
+                Process.Start(new ProcessStartInfo(batUpdater) { UseShellExecute = true, Verb = "runas" });
                 Environment.Exit(0);
             }
             catch (Exception ex)
             {
-                Log("❌ Erro durante a atualização automática: " + ex.Message);
+                Log("❌ Erro ao atualizar: " + ex.Message);
             }
         }
 
