@@ -51,7 +51,27 @@ namespace PCOptimizer
         private ulong totalRamMb = 32768;
         private Brush crosshairColor = Brushes.Lime;
         private string historyFilePath = @"C:\PCOptimizer_Backups\Historico_Acoes.txt";
+[DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool GetSystemTimes(out long lpIdleTime, out long lpKernelTime, out long lpUserTime);
 
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
+        private class MEMORYSTATUSEX
+        {
+            public uint dwLength = (uint)Marshal.SizeOf(typeof(MEMORYSTATUSEX));
+            public uint dwMemoryLoad;
+            public ulong ullTotalPhys;
+            public ulong ullAvailPhys;
+            public ulong ullTotalPageFile;
+            public ulong ullAvailPageFile;
+            public ulong ullTotalVirtual;
+            public ulong ullAvailVirtual;
+            public ulong ullAvailExtendedVirtual;
+        }
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+        static extern bool GlobalMemoryStatusEx([In, Out] MEMORYSTATUSEX lpBuffer);
+
+        private static long _prevIdle = 0, _prevKernel = 0, _prevUser = 0;
         [DllImport("psapi.dll")] static extern int EmptyWorkingSet(IntPtr hwProc);
         [DllImport("ntdll.dll", SetLastError = true)] static extern int NtSetTimerResolution(uint DesiredResolution, bool SetResolution, out uint CurrentResolution);
         [DllImport("user32.dll")] static extern int GetWindowLong(IntPtr hwnd, int index);
@@ -592,57 +612,110 @@ namespace PCOptimizer
 
         private void StartLiveSensorLoop()
         {
-            _sensorTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1.5) };
+            _sensorTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1.2) };
             _sensorTimer.Tick += (s, e) =>
             {
-                if (isReadingSensors) return;
-                isReadingSensors = true;
+                // 1. CPU Load nativo instantâneo via Kernel (0.0001ms sem travar!)
+                float cpuLoad = 0f;
+                if (GetSystemTimes(out long idle, out long kernel, out long user))
+                {
+                    if (_prevKernel != 0 || _prevUser != 0)
+                    {
+                        long diffTotal = (kernel - _prevKernel) + (user - _prevUser);
+                        long diffIdle = idle - _prevIdle;
+                        if (diffTotal > 0)
+                            cpuLoad = (float)Math.Max(0, Math.Min(100, ((diffTotal - diffIdle) * 100.0) / diffTotal));
+                    }
+                    _prevIdle = idle; _prevKernel = kernel; _prevUser = user;
+                }
 
+                // 2. RAM Livre nativa instantânea via Kernel32
+                float ramFree = 16000f;
+                double ramPct = 30;
+                try
+                {
+                    MEMORYSTATUSEX mem = new MEMORYSTATUSEX();
+                    if (GlobalMemoryStatusEx(mem))
+                    {
+                        ramFree = mem.ullAvailPhys / (1024f * 1024f);
+                        ramPct = mem.dwMemoryLoad;
+                        totalRamMb = mem.ullTotalPhys / (1024 * 1024);
+                    }
+                }
+                catch { }
+
+                // 3. Disco C: nativo
+                try
+                {
+                    DriveInfo d = new DriveInfo("C");
+                    if (d.IsReady && txtDiskVal != null)
+                    {
+                        double totalGb = d.TotalSize / (1024.0 * 1024 * 1024);
+                        double freeGb = d.AvailableFreeSpace / (1024.0 * 1024 * 1024);
+                        txtDiskVal.Text = $"💾 Disco C: {freeGb:0} GB Livres (de {totalGb:0} GB - {((totalGb - freeGb) / totalGb) * 100:0}% cheio)";
+                    }
+                }
+                catch { }
+
+                int procs = Process.GetProcesses().Length;
+
+                // 4. Atualizar UI de imediato sem esperar por nada!
+                if (txtCpuVal != null)
+                    txtCpuVal.Text = $"🔥 CPU: {cpuLoad:0.0}%  |  Processos Ativos: {procs}";
+
+                if (txtRamVal != null && totalRamMb > 0)
+                    txtRamVal.Text = $"🧠 RAM Livre: {ramFree:0} MB (de {totalRamMb} MB - {ramPct:0}% em uso)";
+
+                UpdateLiveGraph(cpuLoad, ramPct);
+
+                // 5. Ler GPU (RTX 5080) em segundo plano sem prender a interface
                 Task.Run(() =>
                 {
                     try
                     {
-                        var snap = _hwMonitor.ReadSensors();
-                        var disks = HardwareMonitorService.GetDisksInfo();
-                        var cDrive = disks.FirstOrDefault(d => d.DriveLetter.StartsWith("C")) ?? disks.FirstOrDefault();
-                        int procs = Process.GetProcesses().Length;
-                        float cpuLoad = snap.CpuLoad;
-                        float ramFree = snap.RamAvailableMb > 0 ? snap.RamAvailableMb : 16000;
-
-                        Dispatcher.Invoke(() =>
+                        ProcessStartInfo psi = new ProcessStartInfo("nvidia-smi", "--query-gpu=name,temperature.gpu,fan.speed,power.draw,clocks.current.graphics --format=csv,noheader,nounits")
                         {
-                            string cTempStr = snap.CpuTemp > 0 ? $"{snap.CpuTemp:0}°C" : $"{cpuLoad:0}%";
-                            string gTempStr = snap.GpuTemp > 0 ? $"{snap.GpuTemp:0}°C ({snap.GpuPowerWatts:0}W)" : "Ativa";
-                            lblLiveStats.Text = $"🔥 CPU: {cpuLoad:0.0}% ({cTempStr}) | 🎮 GPU: {gTempStr} | 🧠 RAM Livre: {ramFree:0}MB";
-
-                            if (txtCpuVal != null) txtCpuVal.Text = $"🔥 CPU: {cpuLoad:0.0}%  |  Temp: {(snap.CpuTemp > 0 ? snap.CpuTemp.ToString("0") + " °C" : "Ativo")}  |  Processos: {procs}";
-                            if (txtGpuTempVal != null) txtGpuTempVal.Text = $"🎮 {snap.GpuName}: {snap.GpuTemp:0} °C  |  {snap.GpuPowerWatts:0} W  |  Fan: {snap.GpuFanPercent:0}%  |  {snap.GpuCoreClock:0} MHz";
-
-                            double ramPct = 30;
-                            if (txtRamVal != null && totalRamMb > 0)
+                            RedirectStandardOutput = true,
+                            UseShellExecute = false,
+                            CreateNoWindow = true
+                        };
+                        using (Process p = Process.Start(psi))
+                        {
+                            string o = p?.StandardOutput.ReadToEnd();
+                            p?.WaitForExit(500);
+                            if (!string.IsNullOrWhiteSpace(o))
                             {
-                                ramPct = ((totalRamMb - ramFree) / totalRamMb) * 100.0;
-                                txtRamVal.Text = $"🧠 RAM Livre: {ramFree:0} MB (de {totalRamMb} MB - {ramPct:0}% em uso)";
+                                string[] pts = o.Trim().Split(',');
+                                if (pts.Length >= 5)
+                                {
+                                    string gName = pts[0].Trim();
+                                    string gTemp = pts[1].Trim();
+                                    string gFan = pts[2].Trim();
+                                    string gWatts = pts[3].Trim();
+                                    string gClock = pts[4].Trim();
+
+                                    Dispatcher.Invoke(() =>
+                                    {
+                                        lblLiveStats.Text = $"🔥 CPU: {cpuLoad:0.0}% | 🎮 GPU: {gTemp}°C ({gWatts}W) | 🧠 RAM: {ramFree:0}MB";
+
+                                        if (txtGpuTempVal != null)
+                                            txtGpuTempVal.Text = $"🎮 {gName}: {gTemp} °C  |  {gWatts} W  |  Fan: {gFan}%  |  {gClock} MHz";
+
+                                        if (overlayWin != null && overlayWin.IsVisible && overlayText != null)
+                                            overlayText.Text = $"⚡ CPU: {cpuLoad:0}% | GPU: {gTemp}°C ({gWatts}W)\n🧠 RAM: {ramFree:0}MB | Timer: {(chkTimer.IsChecked == true ? "0.5ms" : "Std")}";
+                                    });
+                                }
                             }
-
-                            if (txtDiskVal != null && cDrive != null)
-                                txtDiskVal.Text = $"💾 Disco {cDrive.DriveLetter}: {cDrive.FreeGB:0} GB Livres (de {cDrive.TotalGB:0} GB - {cDrive.UsedPercent:0}% cheio)";
-
-                            UpdateLiveGraph(cpuLoad, ramPct);
-
-                            if (overlayWin != null && overlayWin.IsVisible && overlayText != null)
-                                overlayText.Text = $"⚡ CPU: {cpuLoad:0}% ({cTempStr}) | GPU: {gTempStr}\n🧠 RAM: {ramFree:0}MB | Timer: {(chkTimer.IsChecked == true ? "0.5ms" : "Std")}";
-
-                            if (chkGuard.IsChecked == true && ramFree < 2500)
-                            {
-                                FlushMemorySilent();
-                                Log("🛡️ [AUTO-GUARD] Limpeza automática de RAM realizada!");
-                            }
-                        });
+                        }
                     }
                     catch { }
-                    finally { isReadingSensors = false; }
                 });
+
+                if (chkGuard.IsChecked == true && ramFree < 2500)
+                {
+                    FlushMemorySilent();
+                    Log("🛡️ [AUTO-GUARD] Limpeza de RAM executada!");
+                }
             };
             _sensorTimer.Start();
         }
