@@ -803,29 +803,62 @@ namespace PCOptimizer
         {
             try
             {
-                Log($"⏳ A transferir a versão {newTag}...");
-                string appDir = AppDomain.CurrentDomain.BaseDirectory;
+                Log($"⏳ [AUTO-UPDATE] A descarregar a nova versão ({newTag}) em segundo plano...");
+                string currentExePath = Process.GetCurrentProcess().MainModule.FileName;
+                string currentDir = AppDomain.CurrentDomain.BaseDirectory;
                 string tempDir = System.IO.Path.GetTempPath();
                 string zipPath = System.IO.Path.Combine(tempDir, "pcopt_update.zip");
-                string batUpdater = System.IO.Path.Combine(tempDir, "pcopt_installer.bat");
+                string extractFolder = System.IO.Path.Combine(tempDir, "pcopt_extracted");
+                string batUpdater = System.IO.Path.Combine(tempDir, "update_runner.bat");
 
-                using (WebClient wc = new WebClient()) { wc.DownloadFile(downloadUrl, zipPath); }
+                // 1. Limpar pastas temporárias anteriores se existirem
+                if (Directory.Exists(extractFolder)) Directory.Delete(extractFolder, true);
+                Directory.CreateDirectory(extractFolder);
 
-                // Script limpo e direto de extração
-                string bat = 
+                // 2. Descarregar o ZIP oficial da Release do GitHub
+                using (WebClient wc = new WebClient())
+                {
+                    wc.DownloadFile(downloadUrl, zipPath);
+                }
+
+                Log("📦 A extrair os novos ficheiros...");
+
+                // 3. Criar script de lote autónomo que aguarda fecho, extrai e substitui
+                string batContent = 
                     "@echo off\r\n" +
-                    "timeout /t 2 /nobreak >nul\r\n" +
-                    $"powershell -Command \"Expand-Archive -Path '{zipPath}' -DestinationPath '{appDir}' -Force\"\r\n" +
-                    $"start \"\" \"{System.IO.Path.Combine(appDir, "PC_Optimizer.exe")}\"\r\n" +
-                    $"del \"{zipPath}\" >nul 2>&1";
+                    "echo A atualizar o PC Optimizer...\r\n" +
+                    ":wait\r\n" +
+                    "taskkill /f /im PC_Optimizer.exe >nul 2>&1\r\n" +
+                    "timeout /t 1 /nobreak >nul\r\n" +
+                    "tasklist | find /i \"PC_Optimizer.exe\" >nul\r\n" +
+                    "if not errorlevel 1 goto wait\r\n" +
+                    // Extrair o ZIP para a pasta de extração
+                    $"powershell -Command \"Expand-Archive -Path '{zipPath}' -DestinationPath '{extractFolder}' -Force\"\r\n" +
+                    // Copiar todos os ficheiros novos por cima dos antigos na pasta de instalação
+                    $"xcopy /y /s /q \"{extractFolder}\\*.*\" \"{currentDir}\"\r\n" +
+                    // Abrir o novo executável atualizado
+                    $"start \"\" \"{currentExePath}\"\r\n" +
+                    // Limpar lixo temporário
+                    $"del \"{zipPath}\" >nul 2>&1\r\n" +
+                    $"rd /s /q \"{extractFolder}\" >nul 2>&1\r\n" +
+                    "del \"%~f0\"";
 
-                File.WriteAllText(batUpdater, bat);
-                Process.Start(new ProcessStartInfo(batUpdater) { UseShellExecute = true, Verb = "runas" });
+                File.WriteAllText(batUpdater, batContent);
+
+                // 4. Executar o script de atualização com privilégios de Administrador
+                ProcessStartInfo psi = new ProcessStartInfo(batUpdater)
+                {
+                    UseShellExecute = true,
+                    Verb = "runas",
+                    WindowStyle = ProcessWindowStyle.Hidden
+                };
+                Process.Start(psi);
                 Environment.Exit(0);
             }
             catch (Exception ex)
             {
-                Log("❌ Erro ao atualizar: " + ex.Message);
+                Log("❌ Erro crítico no Auto-Update: " + ex.Message);
+                MessageBox.Show("Erro ao efetuar a atualização automática: " + ex.Message, "Erro de Update", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
 
