@@ -1,0 +1,39 @@
+name: Build PC_Optimizer EXE
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout Codigo
+      uses: actions/checkout@v4
+
+    - name: Instalar .NET 8
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '8.0.x'
+
+    - name: Compilar PC_Optimizer.exe (Single-File Portatil)
+      run: dotnet publish PCOptimizer.csproj -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -o ./publish
+
+    - name: Guardar PC_Optimizer.exe nos Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: PC_Optimizer_Windows_EXE
+        path: ./publish/PC_Optimizer.exe
+
+    - name: Publicar Automaticamente na Aba Releases do GitHub
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: v14.0.${{ github.run_number }}
+        name: "⚡ PC Optimizer PRO v14.0 (Build #${{ github.run_number }})"
+        body: "Versão compilada automaticamente na nuvem (Estilo Galdino Control + Sensores LibreHardwareMonitor + Benchmark 30.000 Unidades)."
+        files: ./publish/PC_Optimizer.exe
