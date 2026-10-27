@@ -32,9 +32,9 @@ jobs:
     - name: Publicar Release no GitHub com ZIP e EXE
       uses: softprops/action-gh-release@v2
       with:
-        tag_name: v14.0.${{ github.run_number }}
-        name: "⚡ PC Optimizer PRO v14.0 (Build #${{ github.run_number }})"
+        tag_name: v15.0.${{ github.run_number }}
+        name: "⚡ PC Optimizer PRO v15.0 (Build #${{ github.run_number }})"
         body: "Versão completa empacotada em ZIP (evita bloqueios de download direto do Smart App Control)."
         files: |
-          ./publish/PC_Optimizer_v14.zip
+          ./publish/PC_Optimizer_v15.zip
           ./publish/PC_Optimizer.exe

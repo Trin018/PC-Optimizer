@@ -662,7 +662,6 @@ namespace PCOptimizer
                         string json = wc.DownloadString(githubRepoApi);
 
                         Match tagMatch = Regex.Match(json, "\"tag_name\"\\s*:\\s*\"([^\"]+)\"");
-                        // Procura primeiro pelo pacote ZIP (evita bloqueios de segurança), ou pelo EXE
                         Match zipMatch = Regex.Match(json, "\"browser_download_url\"\\s*:\\s*\"([^\"]+PC_Optimizer_v14\\.zip)\"");
                         Match exeMatch = Regex.Match(json, "\"browser_download_url\"\\s*:\\s*\"([^\"]+PC_Optimizer\\.exe)\"");
 
@@ -671,17 +670,29 @@ namespace PCOptimizer
                             string remoteTag = tagMatch.Groups[1].Value.Trim();
                             string downloadUrl = zipMatch.Success ? zipMatch.Groups[1].Value : (exeMatch.Success ? exeMatch.Groups[1].Value : "");
 
-                            // Se a tag do GitHub for diferente da versão que o programa tem gravada
-                            if (!string.IsNullOrWhiteSpace(downloadUrl) && remoteTag != currentVersion)
+                            // Normalizar versões (tirar 'v' e comparar matematicamente)
+                            string rClean = remoteTag.TrimStart('v', 'V').Trim();
+                            string lClean = currentVersion.TrimStart('v', 'V').Trim();
+
+                            Version.TryParse(rClean, out Version rVer);
+                            Version.TryParse(lClean, out Version lVer);
+
+                            // SÓ NOTIFICA SE A VERSÃO DA NUVEM FOR ESTRITAMENTE MAIOR!
+                            bool isNewerAvailable = false;
+                            if (rVer != null && lVer != null)
+                                isNewerAvailable = rVer > lVer;
+                            else
+                                isNewerAvailable = string.Compare(rClean, lClean, StringComparison.OrdinalIgnoreCase) > 0;
+
+                            if (!string.IsNullOrWhiteSpace(downloadUrl) && isNewerAvailable)
                             {
                                 Dispatcher.Invoke(() =>
                                 {
                                     btnUpdate.Content = $"🔔 Atualizar ({remoteTag})!";
                                     btnUpdate.Background = new SolidColorBrush(Color.FromRgb(225, 29, 72));
 
-                                    Log($"🚀 [ATUALIZAÇÃO DETETADA] Nova versão {remoteTag} disponível na nuvem!");
+                                    Log($"🚀 [NOVA VERSÃO] Versão {remoteTag} disponível na nuvem!");
 
-                                    // AGORA SALTA SEMPRE O POP-UP (mesmo no arranque automático!)
                                     MessageBoxResult r = MessageBox.Show(
                                         $"🔥 Está disponível uma nova atualização do PC Optimizer!\n\nVersão Instalada: {currentVersion}\nVersão Disponível: {remoteTag}\n\nDeseja descarregar e atualizar automaticamente agora?",
                                         "Nova Atualização Disponível!",
@@ -698,8 +709,10 @@ namespace PCOptimizer
                             {
                                 Dispatcher.Invoke(() =>
                                 {
+                                    btnUpdate.Content = "🔄 Procurar Update";
+                                    btnUpdate.Background = new SolidColorBrush(Color.FromRgb(2, 132, 199));
                                     Log($"✅ O teu PC Optimizer já está na versão mais recente ({currentVersion})!");
-                                    MessageBox.Show($"✅ Já estás a utilizar a versão mais recente ({currentVersion})!", "Tudo Atualizado", MessageBoxButton.OK, MessageBoxImage.Information);
+                                    MessageBox.Show($"✅ Já estás a utilizar a versão mais recente ({currentVersion})!\nNão existem atualizações pendentes.", "Tudo Atualizado", MessageBoxButton.OK, MessageBoxImage.Information);
                                 });
                             }
                         }
