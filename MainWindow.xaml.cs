@@ -219,6 +219,8 @@ namespace PCOptimizer
             spRight.Children.Add(CreateSmallBtn("🪟 Ir para Interruptores do Windows ->", () => nav2.IsChecked = true));
             spRight.Children.Add(new Border { Height = 6 });
             spRight.Children.Add(CreateSmallBtn("⚖️ Analisar Gargalo (CPU vs GPU)", () => CheckUptimeAndBottleneck()));
+            spRight.Children.Add(new Border { Height = 6 });
+            spRight.Children.Add(CreateSmallBtn("🚗 Scan a Drivers Oficiais", () => ScanForOfficialDrivers()));
             topGrid.Children.Add(cRight); g.Children.Add(topGrid);
 
             Border cGraph = CreateCard("📈 MONITOR DE DESEMPENHO EM TEMPO REAL (AZUL = CPU %   |   ROXO = RAM %)", 1, 0);
@@ -384,6 +386,9 @@ namespace PCOptimizer
         private void BuildPage_VipGamesAndDisplay(Grid page)
         {
             UniformGrid ug = CreateButtonGrid(page);
+            AddCardBtn(ug, "🚗 Scan a Drivers Oficiais (Microsoft API)", "Faz um raio-X à procura de drivers de Chipset, Áudio, Wi-Fi e Bluetooth pendentes nos servidores oficiais.", () => ScanForOfficialDrivers(), true);
+            AddCardBtn(ug, "⚡ Instalar Todos os Drivers Pendentes", "Transfere e instala automaticamente todos os drivers certificados (WHQL) encontrados para a tua placa-mãe.", () => InstallPendingOfficialDrivers(), true);
+            AddCardBtn(ug, "💾 Fazer Backup de Drivers Atuais", "Exporta uma cópia de segurança de todos os drivers instalados no teu PC para C:\\PCOptimizer_Backups\\Drivers.", () => BackupAllSystemDrivers());
             AddCardBtn(ug, "👑 Gravar Jogos VIP (Prioridade Eterna)", "CS2, Valorant, CoD, Fortnite, Apex, Rust e GTA V rodam sempre em Prioridade Alta.", () => RegisterPermanentVipGames(), true);
             AddCardBtn(ug, "⏪ Remover Prioridade Eterna Jogos", "Restaura o comportamento padrão do Windows para os executáveis de jogos.", () => RemovePermanentVipGames());
             AddCardBtn(ug, "🛡️ Blindar Ficheiro HOSTS (Anti-Spy)", "Bloqueia na raiz os servidores de telemetria e anúncios da Microsoft.", () => ApplyHostsTelemetryBlock());
@@ -1229,5 +1234,95 @@ namespace PCOptimizer
         private void UndoGamingAndTimers() { chkGuard.IsChecked = false; chkTimer.IsChecked = false; Log("⏪ Timers revertidos!"); }
         private void UndoNetworkSettings() { ResetDns(); Log("⏪ Rede revertida!"); }
         private void UndoEverythingPanicButton() { UndoPeripherals(); UndoAudioAndVisuals(); UndoBackgroundAndServices(); UndoGamingAndTimers(); UndoNetworkSettings(); RemovePermanentVipGames(); ResetHostsFile(); Log("🏆 Tudo restaurado para o original da Microsoft!"); }
+    
+ // =========================================================================
+        // MOTOR DE DRIVERS (ESTILO IOBIT / DRIVER BOOSTER - 100% LIMPO E OFICIAL)
+        // =========================================================================
+        private void ScanForOfficialDrivers()
+        {
+            Log("🔍 [MOTOR DE DRIVERS] A consultar a API do Windows Update para o teu hardware...");
+            Task.Run(() =>
+            {
+                try
+                {
+                    Type updateSessionType = Type.GetTypeFromProgID("Microsoft.Update.Session");
+                    dynamic updateSession = Activator.CreateInstance(updateSessionType);
+                    dynamic searcher = updateSession.CreateUpdateSearcher();
+                    searcher.ServerSelection = 2; // Catálogo oficial do Windows Update
+
+                    dynamic searchResult = searcher.Search("IsInstalled=0 and Type='Driver'");
+                    int count = searchResult.Updates.Count;
+
+                    if (count == 0)
+                    {
+                        Log("✅ [DRIVERS] Todos os drivers do teu sistema estão atualizados! Nenhum driver pendente.");
+                    }
+                    else
+                    {
+                        Log($"⚠️ [DRIVERS DETETADOS] Foram encontrados {count} drivers com versões mais recentes:");
+                        for (int i = 0; i < count; i++)
+                        {
+                            dynamic update = searchResult.Updates.Item(i);
+                            Log($"   🚗 {i + 1}. {update.Title}");
+                        }
+                        Log("👉 Clica no cartão '⚡ Instalar Todos os Drivers Pendentes' para aplicar.");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log("⚠️ Acesso direto à API COM condicionado. A abrir painel nativo de drivers...");
+                    RunCmd("start ms-settings:windowsupdate-optionalupdates", "Painel de Atualizações Opcionais de Drivers aberto!");
+                }
+            });
+        }
+
+        private void InstallPendingOfficialDrivers()
+        {
+            Log("⚡ [MOTOR DE DRIVERS] A iniciar transferência e instalação de drivers certificados...");
+            Task.Run(() =>
+            {
+                try
+                {
+                    Type updateSessionType = Type.GetTypeFromProgID("Microsoft.Update.Session");
+                    dynamic updateSession = Activator.CreateInstance(updateSessionType);
+                    dynamic searcher = updateSession.CreateUpdateSearcher();
+                    dynamic searchResult = searcher.Search("IsInstalled=0 and Type='Driver'");
+
+                    int count = searchResult.Updates.Count;
+                    if (count == 0)
+                    {
+                        Log("ℹ️ Não existem drivers pendentes para instalar.");
+                        return;
+                    }
+
+                    Type updateCollType = Type.GetTypeFromProgID("Microsoft.Update.UpdateColl");
+                    dynamic updatesToDownload = Activator.CreateInstance(updateCollType);
+                    for (int i = 0; i < count; i++) updatesToDownload.Add(searchResult.Updates.Item(i));
+
+                    Log($"⏳ A descarregar {count} drivers oficiais...");
+                    dynamic downloader = updateSession.CreateUpdateDownloader();
+                    downloader.Updates = updatesToDownload;
+                    downloader.Download();
+
+                    Log("🔧 A instalar drivers no sistema operativo...");
+                    dynamic installer = updateSession.CreateUpdateInstaller();
+                    installer.Updates = updatesToDownload;
+                    dynamic installResult = installer.Install();
+
+                    Log($"🏆 [DRIVERS INSTALADOS] Código de resultado: {installResult.ResultCode}. Reinicia o PC para ativar!");
+                }
+                catch (Exception ex)
+                {
+                    Log("❌ Erro ao instalar drivers: " + ex.Message);
+                }
+            });
+        }
+
+        private void BackupAllSystemDrivers()
+        {
+            Log("💾 A criar cópia de segurança completa de todos os drivers em C:\\PCOptimizer_Backups\\Drivers...");
+            string backupPath = @"C:\PCOptimizer_Backups\Drivers";
+            RunCmdVisible("md \"" + backupPath + "\" >nul 2>&1 & pnputil /export-driver * \"" + backupPath + "\"", "Exportação de drivers com pnputil concluída!");
+        }
     }
 }
