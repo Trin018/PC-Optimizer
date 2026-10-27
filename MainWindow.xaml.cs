@@ -723,7 +723,7 @@ namespace PCOptimizer
         // --- AUTO-UPDATER COM POP-UP AUTOMÁTICO NO ARRANQUE & SUPORTE A ZIP ---
         private void CheckForGitHubReleasesUpdate(bool isManual)
         {
-            if (isManual) Log("🔄 A procurar atualizações nas Releases do GitHub...");
+            if (isManual) Log("🔄 A procurar atualizações nas Releases do GitHub (Trin018)...");
             Task.Run(() =>
             {
                 try
@@ -738,14 +738,20 @@ namespace PCOptimizer
                         Match tagMatch = Regex.Match(json, "\"tag_name\"\\s*:\\s*\"([^\"]+)\"");
                         Match urlMatch = Regex.Match(json, "\"browser_download_url\"\\s*:\\s*\"([^\"]+PC_Optimizer\\.zip)\"");
 
-                        if (tagMatch.Success && urlMatch.Success)
+                        if (tagMatch.Success)
                         {
                             string remoteTagFull = tagMatch.Groups[1].Value.Trim(); // Ex: v15.0.8
-                            string downloadUrl = urlMatch.Groups[1].Value;
+                            string downloadUrl = urlMatch.Success ? urlMatch.Groups[1].Value : "";
 
-                            // Limpar a letra 'v' para comparar apenas os números matemáticos (Ex: 15.0.8 vs 14.5)
                             string remoteClean = remoteTagFull.TrimStart('v', 'V').Trim();
-                            string localClean = currentVersion.TrimStart('v', 'V').Trim();
+                            
+                            // FORÇAR TESTE: Se for manual, vamos assumir versão local velha para o pop-up saltar SEMPRE!
+                            string localClean = isManual ? "1.0.0" : currentVersion.TrimStart('v', 'V').Trim();
+
+                            Dispatcher.Invoke(() =>
+                            {
+                                Log($"ℹ️ [DEBUG] Versão Local detetada: '{localClean}' | Versão no GitHub: '{remoteClean}'");
+                            });
 
                             Version.TryParse(remoteClean, out Version remoteVer);
                             Version.TryParse(localClean, out Version localVer);
@@ -756,7 +762,7 @@ namespace PCOptimizer
                             else
                                 isNewer = string.Compare(remoteClean, localClean, StringComparison.OrdinalIgnoreCase) > 0;
 
-                            if (isNewer)
+                            if (!string.IsNullOrWhiteSpace(downloadUrl) && (isNewer || isManual))
                             {
                                 Dispatcher.Invoke(() =>
                                 {
@@ -766,7 +772,7 @@ namespace PCOptimizer
                                     Log($"🚀 [NOVA VERSÃO] Encontrada a versão {remoteTagFull} no GitHub!");
 
                                     MessageBoxResult r = MessageBox.Show(
-                                        $"🔥 Está disponível uma nova atualização do PC Optimizer!\n\nVersão Atual: v{currentVersion}\nNova Versão: {remoteTagFull}\n\nDeseja descarregar e atualizar automaticamente agora?",
+                                        $"🔥 Está disponível uma nova atualização do PC Optimizer!\n\nVersão Atual: v{localClean}\nNova Versão: {remoteTagFull}\n\nDeseja descarregar e atualizar automaticamente agora?",
                                         "Atualização Automática Disponível",
                                         MessageBoxButton.YesNo,
                                         MessageBoxImage.Information);
@@ -782,15 +788,19 @@ namespace PCOptimizer
                                 Dispatcher.Invoke(() =>
                                 {
                                     Log($"✅ O teu PC Optimizer já está na versão mais recente (v{currentVersion})!");
-                                    MessageBox.Show($"✅ Já estás a utilizar a versão mais recente (v{currentVersion})!\nNão existem atualizações pendentes.", "Tudo Atualizado", MessageBoxButton.OK, MessageBoxImage.Information);
+                                    MessageBox.Show($"✅ Já estás a utilizar a versão mais recente ({currentVersion})!\nNão existem atualizações pendentes.", "Tudo Atualizado", MessageBoxButton.OK, MessageBoxImage.Information);
                                 });
                             }
+                        }
+                        else
+                        {
+                            if (isManual) Dispatcher.Invoke(() => Log("⚠️ A resposta da API do GitHub não continha nenhuma Tag válida."));
                         }
                     }
                 }
                 catch (Exception ex)
                 {
-                    if (isManual) Dispatcher.Invoke(() => Log($"ℹ️ Verificação de atualizações: {ex.Message}"));
+                    if (isManual) Dispatcher.Invoke(() => Log($"❌ Erro ao verificar atualizações: {ex.Message}"));
                 }
             });
         }
