@@ -123,7 +123,7 @@ namespace PCOptimizer
             PreviewKeyUp += (s, e) => pressedKeys.Remove(e.Key);
 
             StartLiveSensorLoop();
-            ContentRendered += (s, e) => Task.Run(() => { _hwMonitor.Initialize(); string hw = GetHardwareSummary(); Dispatcher.Invoke(() => { lblHardware.Text = $"Olá, {Environment.UserName}!  |  {hw}"; LoadActionHistory(); CalculateOptimizationScore(); }); CheckForGitHubReleasesUpdate(false); });
+            ContentRendered += (s, e) => Task.Run(() => { _hwMonitor.Initialize(); string hw = GetHardwareSummary(); Dispatcher.Invoke(() => { lblHardware.Text = hw; LoadActionHistory(); CalculateOptimizationScore(); }); CheckForGitHubReleasesUpdate(false); });
             Log($"⚡ PC OPTIMIZER v{currentVersion} | Interface Cards + Switches com Leitura Real + Ninite Store 36 Apps!");
         }
 
