@@ -805,67 +805,91 @@ namespace PCOptimizer
             });
         }
 
-        private void DownloadAndApplyUpdate(string downloadUrl, string newTag)
+        private void CheckForGitHubReleasesUpdate(bool isManual)
         {
-            try
+            if (isManual) Log("🔄 A procurar atualizações nas Releases do GitHub (Trin018)...");
+            Task.Run(() =>
             {
-                Log($"⏳ [AUTO-UPDATE] A descarregar a nova versão ({newTag}) em segundo plano...");
-                string currentExePath = Process.GetCurrentProcess().MainModule.FileName;
-                string currentDir = AppDomain.CurrentDomain.BaseDirectory;
-                string tempDir = System.IO.Path.GetTempPath();
-                string zipPath = System.IO.Path.Combine(tempDir, "pcopt_update.zip");
-                string extractFolder = System.IO.Path.Combine(tempDir, "pcopt_extracted");
-                string batUpdater = System.IO.Path.Combine(tempDir, "update_runner.bat");
-
-                // 1. Limpar pastas temporárias anteriores se existirem
-                if (Directory.Exists(extractFolder)) Directory.Delete(extractFolder, true);
-                Directory.CreateDirectory(extractFolder);
-
-                // 2. Descarregar o ZIP oficial da Release do GitHub
-                using (WebClient wc = new WebClient())
+                try
                 {
-                    wc.DownloadFile(downloadUrl, zipPath);
+                    ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
+                    using (WebClient wc = new WebClient())
+                    {
+                        wc.Headers.Add("User-Agent", "PCOptimizer-App");
+                        wc.Headers.Add("Cache-Control", "no-cache");
+                        string json = wc.DownloadString(githubRepoApi);
+
+                        // 1. Extrair a Tag da última Release (Ex: v15.0.12)
+                        Match tagMatch = Regex.Match(json, "\"tag_name\"\\s*:\\s*\"([^\"]+)\"");
+                        // 2. Extrair o link direto do ficheiro .zip que o GitHub Actions publicou
+                        Match zipMatch = Regex.Match(json, "\"browser_download_url\"\\s*:\\s*\"([^\"]+PC_Optimizer\\.zip)\"");
+
+                        if (tagMatch.Success)
+                        {
+                            string remoteTagFull = tagMatch.Groups[1].Value.Trim();
+                            string downloadUrl = zipMatch.Success ? zipMatch.Groups[1].Value : "";
+
+                            string remoteClean = remoteTagFull.TrimStart('v', 'V').Trim();
+                            string localClean = currentVersion.TrimStart('v', 'V').Trim();
+
+                            Version.TryParse(remoteClean, out Version remoteVer);
+                            Version.TryParse(localClean, out Version localVer);
+
+                            bool isNewer = false;
+                            if (remoteVer != null && localVer != null)
+                                isNewer = remoteVer > localVer;
+                            else
+                                isNewer = string.Compare(remoteClean, localClean, StringComparison.OrdinalIgnoreCase) > 0;
+
+                            if (isManual)
+                            {
+                                Dispatcher.Invoke(() =>
+                                {
+                                    Log($"ℹ️ [DEBUG UPDATE] Versão Local: '{localClean}' | Versão Remota (GitHub): '{remoteClean}' | URL ZIP Encontrado: {!string.IsNullOrWhiteSpace(downloadUrl)}");
+                                });
+                            }
+
+                            if (!string.IsNullOrWhiteSpace(downloadUrl) && (isNewer || isManual))
+                            {
+                                Dispatcher.Invoke(() =>
+                                {
+                                    btnUpdate.Content = $"🔔 Atualizar ({remoteTagFull})!";
+                                    btnUpdate.Background = new SolidColorBrush(Color.FromRgb(225, 29, 72));
+
+                                    Log($"🚀 [NOVA VERSÃO] Encontrada a versão {remoteTagFull} no GitHub!");
+
+                                    MessageBoxResult r = MessageBox.Show(
+                                        $"🔥 Está disponível uma nova atualização do PC Optimizer!\n\nVersão Atual: v{localClean}\nNova Versão: {remoteTagFull}\n\nDeseja descarregar e atualizar automaticamente agora?",
+                                        "Atualização Automática Disponível",
+                                        MessageBoxButton.YesNo,
+                                        MessageBoxImage.Information);
+
+                                    if (r == MessageBoxResult.Yes)
+                                    {
+                                        DownloadAndApplyUpdate(downloadUrl, remoteTagFull);
+                                    }
+                                });
+                            }
+                            else if (isManual)
+                            {
+                                Dispatcher.Invoke(() =>
+                                {
+                                    Log($"✅ O teu PC Optimizer já está na versão mais recente ({currentVersion})!");
+                                    MessageBox.Show($"✅ Já estás a utilizar a versão mais recente ({currentVersion})!\nNão existem atualizações pendentes.", "Tudo Atualizado", MessageBoxButton.OK, MessageBoxImage.Information);
+                                });
+                            }
+                        }
+                        else
+                        {
+                            if (isManual) Dispatcher.Invoke(() => Log("⚠️ A resposta da API do GitHub não continha nenhuma Tag válida."));
+                        }
+                    }
                 }
-
-                Log("📦 A extrair os novos ficheiros...");
-
-                // 3. Criar script de lote autónomo que aguarda fecho, extrai e substitui
-                string batContent = 
-                    "@echo off\r\n" +
-                    "echo A atualizar o PC Optimizer...\r\n" +
-                    ":wait\r\n" +
-                    "taskkill /f /im PC_Optimizer.exe >nul 2>&1\r\n" +
-                    "timeout /t 1 /nobreak >nul\r\n" +
-                    "tasklist | find /i \"PC_Optimizer.exe\" >nul\r\n" +
-                    "if not errorlevel 1 goto wait\r\n" +
-                    // Extrair o ZIP para a pasta de extração
-                    $"powershell -Command \"Expand-Archive -Path '{zipPath}' -DestinationPath '{extractFolder}' -Force\"\r\n" +
-                    // Copiar todos os ficheiros novos por cima dos antigos na pasta de instalação
-                    $"xcopy /y /s /q \"{extractFolder}\\*.*\" \"{currentDir}\"\r\n" +
-                    // Abrir o novo executável atualizado
-                    $"start \"\" \"{currentExePath}\"\r\n" +
-                    // Limpar lixo temporário
-                    $"del \"{zipPath}\" >nul 2>&1\r\n" +
-                    $"rd /s /q \"{extractFolder}\" >nul 2>&1\r\n" +
-                    "del \"%~f0\"";
-
-                File.WriteAllText(batUpdater, batContent);
-
-                // 4. Executar o script de atualização com privilégios de Administrador
-                ProcessStartInfo psi = new ProcessStartInfo(batUpdater)
+                catch (Exception ex)
                 {
-                    UseShellExecute = true,
-                    Verb = "runas",
-                    WindowStyle = ProcessWindowStyle.Hidden
-                };
-                Process.Start(psi);
-                Environment.Exit(0);
-            }
-            catch (Exception ex)
-            {
-                Log("❌ Erro crítico no Auto-Update: " + ex.Message);
-                MessageBox.Show("Erro ao efetuar a atualização automática: " + ex.Message, "Erro de Update", MessageBoxButton.OK, MessageBoxImage.Error);
-            }
+                    if (isManual) Dispatcher.Invoke(() => Log($"❌ Erro ao verificar atualizações: {ex.Message}"));
+                }
+            });
         }
 
         private void LoadInstalledProgramsList()
