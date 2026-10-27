@@ -641,9 +641,10 @@ namespace PCOptimizer
             _sensorTimer.Start();
         }
 
+        // --- AUTO-UPDATER COM POP-UP AUTOMÁTICO NO ARRANQUE & SUPORTE A ZIP ---
         private void CheckForGitHubReleasesUpdate(bool isManual)
         {
-            if (isManual) Log("🔄 A procurar nova versão nas Releases do GitHub (Trin018/PC-Optimizer)...");
+            if (isManual) Log("🔄 A verificar atualizações no GitHub...");
             Task.Run(() =>
             {
                 try
@@ -652,27 +653,48 @@ namespace PCOptimizer
                     using (WebClient wc = new WebClient())
                     {
                         wc.Headers.Add("User-Agent", "PCOptimizer-App");
+                        wc.Headers.Add("Cache-Control", "no-cache");
                         string json = wc.DownloadString(githubRepoApi);
 
                         Match tagMatch = Regex.Match(json, "\"tag_name\"\\s*:\\s*\"([^\"]+)\"");
-                        Match urlMatch = Regex.Match(json, "\"browser_download_url\"\\s*:\\s*\"([^\"]+PC_Optimizer\\.exe)\"");
+                        // Procura primeiro pelo pacote ZIP (evita bloqueios de segurança), ou pelo EXE
+                        Match zipMatch = Regex.Match(json, "\"browser_download_url\"\\s*:\\s*\"([^\"]+PC_Optimizer_v14\\.zip)\"");
+                        Match exeMatch = Regex.Match(json, "\"browser_download_url\"\\s*:\\s*\"([^\"]+PC_Optimizer\\.exe)\"");
 
-                        if (tagMatch.Success && urlMatch.Success)
+                        if (tagMatch.Success)
                         {
-                            string latestTag = tagMatch.Groups[1].Value.TrimStart('v');
-                            string downloadUrl = urlMatch.Groups[1].Value;
+                            string remoteTag = tagMatch.Groups[1].Value.Trim();
+                            string downloadUrl = zipMatch.Success ? zipMatch.Groups[1].Value : (exeMatch.Success ? exeMatch.Groups[1].Value : "");
 
-                            if (isManual)
+                            // Se a tag do GitHub for diferente da versão que o programa tem gravada
+                            if (!string.IsNullOrWhiteSpace(downloadUrl) && remoteTag != currentVersion)
                             {
                                 Dispatcher.Invoke(() =>
                                 {
+                                    btnUpdate.Content = $"🔔 Atualizar ({remoteTag})!";
+                                    btnUpdate.Background = new SolidColorBrush(Color.FromRgb(225, 29, 72));
+
+                                    Log($"🚀 [ATUALIZAÇÃO DETETADA] Nova versão {remoteTag} disponível na nuvem!");
+
+                                    // AGORA SALTA SEMPRE O POP-UP (mesmo no arranque automático!)
                                     MessageBoxResult r = MessageBox.Show(
-                                        $"🚀 Última Release encontrada no teu GitHub: v{latestTag}\n(A tua versão atual: v{currentVersion})\n\nQueres transferir o último PC_Optimizer.exe diretamente da nuvem e reiniciar agora?",
-                                        "GitHub Cloud Auto-Updater",
+                                        $"🔥 Está disponível uma nova atualização do PC Optimizer!\n\nVersão Instalada: {currentVersion}\nVersão Disponível: {remoteTag}\n\nDeseja descarregar e atualizar automaticamente agora?",
+                                        "Nova Atualização Disponível!",
                                         MessageBoxButton.YesNo,
                                         MessageBoxImage.Information);
 
-                                    if (r == MessageBoxResult.Yes) DownloadAndReplaceExe(downloadUrl, latestTag);
+                                    if (r == MessageBoxResult.Yes)
+                                    {
+                                        DownloadAndApplyUpdate(downloadUrl, remoteTag);
+                                    }
+                                });
+                            }
+                            else if (isManual)
+                            {
+                                Dispatcher.Invoke(() =>
+                                {
+                                    Log($"✅ O teu PC Optimizer já está na versão mais recente ({currentVersion})!");
+                                    MessageBox.Show($"✅ Já estás a utilizar a versão mais recente ({currentVersion})!", "Tudo Atualizado", MessageBoxButton.OK, MessageBoxImage.Information);
                                 });
                             }
                         }
@@ -680,28 +702,60 @@ namespace PCOptimizer
                 }
                 catch (Exception ex)
                 {
-                    if (isManual) Dispatcher.Invoke(() => Log($"ℹ️ Verificação concluída ({ex.Message})."));
+                    if (isManual) Dispatcher.Invoke(() => Log($"ℹ️ Verificação de atualizações: {ex.Message}"));
                 }
             });
         }
 
-        private void DownloadAndReplaceExe(string downloadUrl, string newTag)
+        private void DownloadAndApplyUpdate(string downloadUrl, string newTag)
         {
             try
             {
-                Log($"⏳ A transferir novo PC_Optimizer.exe (v{newTag}) do GitHub...");
-                string currentExe = Process.GetCurrentProcess().MainModule.FileName;
-                string newExe = currentExe + ".new";
-                string batUpdater = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "update_pcopt.bat");
+                Log($"⏳ A transferir a versão {newTag} em segundo plano...");
+                string currentExePath = Process.GetCurrentProcess().MainModule.FileName;
+                string tempDir = System.IO.Path.GetTempPath();
+                string batUpdater = System.IO.Path.Combine(tempDir, "update_pcopt.bat");
 
-                using (WebClient wc = new WebClient()) wc.DownloadFile(downloadUrl, newExe);
+                if (downloadUrl.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+                {
+                    string tempZip = System.IO.Path.Combine(tempDir, "update.zip");
+                    string extractDir = System.IO.Path.Combine(tempDir, "pcopt_extracted");
 
-                string batContent = $"@echo off\r\ntimeout /t 2 /nobreak >nul\r\nmove /y \"{newExe}\" \"{currentExe}\"\r\nstart \"\" \"{currentExe}\"\r\ndel \"%~f0\"";
-                File.WriteAllText(batUpdater, batContent);
+                    using (WebClient wc = new WebClient()) { wc.DownloadFile(downloadUrl, tempZip); }
+
+                    // Script batch que aguarda o encerramento da app, extrai o ZIP e substitui o executável
+                    string batContent = 
+                        $"@echo off\r\n" +
+                        $"timeout /t 2 /nobreak >nul\r\n" +
+                        $"powershell -Command \"Expand-Archive -Path '{tempZip}' -DestinationPath '{extractDir}' -Force\"\r\n" +
+                        $"copy /y \"{extractDir}\\PC_Optimizer.exe\" \"{currentExePath}\"\r\n" +
+                        $"start \"\" \"{currentExePath}\"\r\n" +
+                        $"del \"{tempZip}\" >nul 2>&1\r\n" +
+                        $"rd /s /q \"{extractDir}\" >nul 2>&1\r\n" +
+                        $"del \"%~f0\"";
+
+                    File.WriteAllText(batUpdater, batContent);
+                }
+                else
+                {
+                    string tempExe = currentExePath + ".new";
+                    using (WebClient wc = new WebClient()) { wc.DownloadFile(downloadUrl, tempExe); }
+
+                    string batContent = 
+                        $"@echo off\r\ntimeout /t 2 /nobreak >nul\r\n" +
+                        $"move /y \"{tempExe}\" \"{currentExePath}\"\r\n" +
+                        $"start \"\" \"{currentExePath}\"\r\ndel \"%~f0\"";
+
+                    File.WriteAllText(batUpdater, batContent);
+                }
+
                 Process.Start(new ProcessStartInfo(batUpdater) { CreateNoWindow = true, UseShellExecute = false });
                 Environment.Exit(0);
             }
-            catch (Exception ex) { Log("❌ Erro ao atualizar .exe: " + ex.Message); }
+            catch (Exception ex)
+            {
+                Log("❌ Erro durante a atualização automática: " + ex.Message);
+            }
         }
 
         private void LoadInstalledProgramsList()
