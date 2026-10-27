@@ -7,7 +7,7 @@ using System.Management;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Runtime.InteropServices;
-using System.Threading;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
@@ -23,10 +23,11 @@ namespace PCOptimizer
 {
     public partial class MainWindow : Window
     {
-        private string currentVersion = "14.0";
+        private string currentVersion = "14.5";
         private string githubRepoApi = "https://api.github.com/repos/Trin018/PC-Optimizer/releases/latest";
 
         private HardwareMonitorService _hwMonitor = new HardwareMonitorService();
+        private DispatcherTimer _sensorTimer;
         private Window overlayWin, crosshairWin;
         private TextBox txtSearchProg;
         private TextBlock txtCpuVal, txtRamVal, txtDiskVal, txtGpuTempVal, txtOptScoreVal, txtOptStatus;
@@ -44,12 +45,10 @@ namespace PCOptimizer
         private Stopwatch mouseSw = new Stopwatch();
         private int mouseSamples = 0, maxMouseHz = 0, maxSimulKeys = 0, crosshairStyle = 0;
         private double ufoX = 0;
-        private bool ufoRunning = false, isUpdatingToggles = false;
+        private bool ufoRunning = false, isUpdatingToggles = false, isReadingSensors = false;
         private ulong totalRamMb = 32768;
-        private float latestCpuTemp = 0, latestGpuTemp = 0, latestGpuWatts = 0, latestGpuFan = 0;
         private Brush crosshairColor = Brushes.Lime;
         private string historyFilePath = @"C:\PCOptimizer_Backups\Historico_Acoes.txt";
-        private PerformanceCounter cpuCounter, ramCounter;
 
         [DllImport("psapi.dll")] static extern int EmptyWorkingSet(IntPtr hwProc);
         [DllImport("ntdll.dll", SetLastError = true)] static extern int NtSetTimerResolution(uint DesiredResolution, bool SetResolution, out uint CurrentResolution);
@@ -61,12 +60,10 @@ namespace PCOptimizer
         public struct DEVMODE
         {
             [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmDeviceName;
-            public short dmSpecVersion; public short dmDriverVersion; public short dmSize; public short dmDriverExtra; public int dmFields;
-            public int dmPositionX; public int dmPositionY; public int dmDisplayOrientation; public int dmDisplayFixedOutput;
-            public short dmColor; public short dmDuplex; public short dmYResolution; public short dmTTOption; public short dmCollate;
+            public short dmSpecVersion, dmDriverVersion, dmSize, dmDriverExtra; public int dmFields, dmPositionX, dmPositionY, dmDisplayOrientation, dmDisplayFixedOutput;
+            public short dmColor, dmDuplex, dmYResolution, dmTTOption, dmCollate;
             [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmFormName;
-            public short dmLogPixels; public int dmBitsPerPel; public int dmPelsWidth; public int dmPelsHeight;
-            public int dmDisplayFlags; public int dmDisplayFrequency;
+            public short dmLogPixels; public int dmBitsPerPel, dmPelsWidth, dmPelsHeight, dmDisplayFlags, dmDisplayFrequency;
         }
         [DllImport("user32.dll", CharSet = CharSet.Ansi)] static extern int EnumDisplaySettings(string lpszDeviceName, int iModeNum, ref DEVMODE lpDevMode);
         [DllImport("user32.dll", CharSet = CharSet.Ansi)] static extern int ChangeDisplaySettings(ref DEVMODE lpDevMode, int dwFlags);
@@ -75,13 +72,9 @@ namespace PCOptimizer
         {
             InitializeComponent();
             lblVerTitle.Text = "CONTROL PRO v" + currentVersion;
+            nav9.Content = "📦  Ninite App Store (36 Apps)";
 
-            topDragBar.MouseLeftButtonDown += (s, e) =>
-            {
-                if (e.ClickCount == 2) ToggleFullscreen();
-                else if (e.ButtonState == MouseButtonState.Pressed) DragMove();
-            };
-
+            topDragBar.MouseLeftButtonDown += (s, e) => { if (e.ClickCount == 2) ToggleFullscreen(); else if (e.ButtonState == MouseButtonState.Pressed) DragMove(); };
             btnMin.Click += (s, e) => WindowState = WindowState.Minimized;
             btnMax.Click += (s, e) => ToggleFullscreen();
             btnClose.Click += (s, e) => { _hwMonitor.Dispose(); Environment.Exit(0); };
@@ -89,22 +82,17 @@ namespace PCOptimizer
             btnTopCrosshair.Click += (s, e) => ToggleCrosshairOverlay();
             btnUpdate.Click += (s, e) => CheckForGitHubReleasesUpdate(true);
 
-            chkGuard.Checked += (s, e) => Log("🛡️ [AUTO-GUARD ATIVADO] Vigia automático de RAM (<2.5GB) em execução!");
+            chkGuard.Checked += (s, e) => Log("🛡️ [AUTO-GUARD ATIVADO] Vigia automático de RAM (<2.5GB) ativo!");
             chkGuard.Unchecked += (s, e) => Log("🛡️ [AUTO-GUARD DESATIVADO]");
             chkTimer.Checked += ToggleTimerResolution;
             chkTimer.Unchecked += ToggleTimerResolution;
 
             Grid[] pages = { page1, page2, page3, page4, page5, page6, page7, page8, page9, page10, page11, page12, page13, page14 };
             RadioButton[] navs = { nav1, nav2, nav3, nav4, nav5, nav6, nav7, nav8, nav9, nav10, nav11, nav12, nav13, nav14 };
-
             for (int i = 0; i < 14; i++)
             {
                 int idx = i;
-                navs[i].Checked += (s, e) =>
-                {
-                    for (int j = 0; j < 14; j++) pages[j].Visibility = (j == idx) ? Visibility.Visible : Visibility.Collapsed;
-                    if (idx == 0) CalculateOptimizationScore();
-                };
+                navs[i].Checked += (s, e) => { for (int j = 0; j < 14; j++) pages[j].Visibility = (j == idx) ? Visibility.Visible : Visibility.Collapsed; if (idx == 0) CalculateOptimizationScore(); };
             }
 
             BuildPage0_GaldinoDashboard(page1);
@@ -115,7 +103,7 @@ namespace PCOptimizer
             BuildPage_CrosshairAndGamePing(page6);
             BuildPage_VipGamesAndDisplay(page7);
             BuildPage_DiskSpaceHunter(page8);
-            BuildPage_GamerAppStore(page9);
+            BuildPage_NiniteAppStore(page9);
             BuildPage3_NativeTests(page10);
             BuildPage4_RevoUninstaller(page11);
             BuildPage5_FansAndRgb(page12);
@@ -126,41 +114,21 @@ namespace PCOptimizer
             {
                 IntPtr hwnd = new WindowInteropHelper(this).Handle;
                 HwndSource.FromHwnd(hwnd)?.AddHook(HwndHook);
-                RegisterHotKey(hwnd, 9001, 0x0002 | 0x0004, 0x70); // Ctrl+Shift+F1
-                RegisterHotKey(hwnd, 9002, 0x0002 | 0x0004, 0x71); // Ctrl+Shift+F2
-                RegisterHotKey(hwnd, 9003, 0x0002 | 0x0004, 0x72); // Ctrl+Shift+F3
+                RegisterHotKey(hwnd, 9001, 0x0006, 0x70); // Ctrl+Shift+F1
+                RegisterHotKey(hwnd, 9002, 0x0006, 0x71); // Ctrl+Shift+F2
+                RegisterHotKey(hwnd, 9003, 0x0006, 0x72); // Ctrl+Shift+F3
             };
 
-            PreviewKeyDown += (s, e) =>
-            {
-                if (page10.Visibility == Visibility.Visible && lblKeyTest != null)
-                {
-                    pressedKeys.Add(e.Key);
-                    if (pressedKeys.Count > maxSimulKeys) maxSimulKeys = pressedKeys.Count;
-                    lblKeyTest.Text = $"⌨️ Última: [{e.Key}] | Simultâneas: {pressedKeys.Count} | 🏆 Recorde NKRO: {maxSimulKeys} teclas";
-                }
-            };
+            PreviewKeyDown += (s, e) => { if (page10.Visibility == Visibility.Visible && lblKeyTest != null) { pressedKeys.Add(e.Key); if (pressedKeys.Count > maxSimulKeys) maxSimulKeys = pressedKeys.Count; lblKeyTest.Text = $"⌨️ Última: [{e.Key}] | Simultâneas: {pressedKeys.Count} | 🏆 Recorde NKRO: {maxSimulKeys} teclas"; } };
             PreviewKeyUp += (s, e) => pressedKeys.Remove(e.Key);
 
-            ContentRendered += (s, e) =>
-            {
-                Task.Run(() =>
-                {
-                    _hwMonitor.Initialize();
-                    string hw = GetHardwareSummary();
-                    Dispatcher.Invoke(() =>
-                    {
-                        lblHardware.Text = $"Olá, {Environment.UserName}!  |  {hw}";
-                        LoadActionHistory();
-                        CalculateOptimizationScore();
-                    });
-                    InitLiveSensorsAsync();
-                    CheckForGitHubReleasesUpdate(false);
-                });
-            };
-
-            Log($"⚡ PC OPTIMIZER v{currentVersion} (.NET 8 + LibreHardwareMonitor + Simulador 30.000 Unidades) Ativo!");
+            StartLiveSensorLoop();
+            ContentRendered += (s, e) => Task.Run(() => { _hwMonitor.Initialize(); string hw = GetHardwareSummary(); Dispatcher.Invoke(() => { lblHardware.Text = $"Olá, {Environment.UserName}!  |  {hw}"; LoadActionHistory(); CalculateOptimizationScore(); }); CheckForGitHubReleasesUpdate(false); });
+            Log($"⚡ PC OPTIMIZER v{currentVersion} | Interface Cards + Switches com Leitura Real + Ninite Store 36 Apps!");
         }
+
+        private bool CheckRegInt(string key, string val, int exp) { try { object v = Registry.GetValue(key, val, null); if (v != null && Convert.ToInt32(v) == exp) return true; } catch { } return false; }
+        private bool CheckRegStr(string key, string val, string exp) { try { object v = Registry.GetValue(key, val, null); if (v != null && v.ToString().Trim() == exp) return true; } catch { } return false; }
 
         private IntPtr HwndHook(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
         {
@@ -174,110 +142,59 @@ namespace PCOptimizer
             return IntPtr.Zero;
         }
 
-        private void AddSwitchCard(Panel parent, string badgeType, string title, string desc, bool initialState, Action<bool> onToggle)
+        private void AddSwitchCard(Panel parent, string badgeType, string title, string desc, bool state, Action<bool> onToggle)
         {
-            Border card = new Border
-            {
-                Background = new SolidColorBrush(Color.FromRgb(13, 19, 31)),
-                BorderBrush = initialState ? new SolidColorBrush(Color.FromRgb(2, 132, 199)) : new SolidColorBrush(Color.FromRgb(26, 38, 59)),
-                BorderThickness = new Thickness(1),
-                CornerRadius = new CornerRadius(10),
-                Margin = new Thickness(6),
-                Padding = new Thickness(14, 12, 14, 12)
-            };
-
+            Border card = new Border { Background = new SolidColorBrush(Color.FromRgb(13, 19, 31)), BorderBrush = state ? new SolidColorBrush(Color.FromRgb(2, 132, 199)) : new SolidColorBrush(Color.FromRgb(26, 38, 59)), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(10), Margin = new Thickness(6), Padding = new Thickness(14, 12, 14, 12) };
             DockPanel dp = new DockPanel();
-            Border badge = new Border
-            {
-                CornerRadius = new CornerRadius(4),
-                Padding = new Thickness(7, 2, 7, 2),
-                HorizontalAlignment = HorizontalAlignment.Left,
-                Margin = new Thickness(0, 0, 0, 8),
-                Background = badgeType == "REC" ? new SolidColorBrush(Color.FromRgb(12, 45, 72)) : new SolidColorBrush(Color.FromRgb(66, 32, 6)),
-                BorderBrush = badgeType == "REC" ? new SolidColorBrush(Color.FromRgb(2, 132, 199)) : new SolidColorBrush(Color.FromRgb(217, 119, 6)),
-                BorderThickness = new Thickness(1),
-                Child = new TextBlock
-                {
-                    Text = badgeType == "REC" ? "★ RECOMENDADO" : "! AVANÇADO",
-                    FontSize = 9.5,
-                    FontWeight = FontWeights.Bold,
-                    Foreground = badgeType == "REC" ? new SolidColorBrush(Color.FromRgb(56, 189, 248)) : new SolidColorBrush(Color.FromRgb(251, 191, 36))
-                }
-            };
-            DockPanel.SetDock(badge, Dock.Top);
-            dp.Children.Add(badge);
+            Border badge = new Border { CornerRadius = new CornerRadius(4), Padding = new Thickness(7, 2, 7, 2), HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 0, 0, 8), Background = badgeType == "REC" ? new SolidColorBrush(Color.FromRgb(12, 45, 72)) : new SolidColorBrush(Color.FromRgb(66, 32, 6)), BorderBrush = badgeType == "REC" ? new SolidColorBrush(Color.FromRgb(2, 132, 199)) : new SolidColorBrush(Color.FromRgb(217, 119, 6)), BorderThickness = new Thickness(1), Child = new TextBlock { Text = badgeType == "REC" ? "★ RECOMENDADO" : "! AVANÇADO", FontSize = 9.5, FontWeight = FontWeights.Bold, Foreground = badgeType == "REC" ? new SolidColorBrush(Color.FromRgb(56, 189, 248)) : new SolidColorBrush(Color.FromRgb(251, 191, 36)) } };
+            DockPanel.SetDock(badge, Dock.Top); dp.Children.Add(badge);
 
             DockPanel bottomBar = new DockPanel { Margin = new Thickness(0, 8, 0, 0), VerticalAlignment = VerticalAlignment.Bottom };
             DockPanel.SetDock(bottomBar, Dock.Bottom);
-
-            TextBlock lblState = new TextBlock
-            {
-                Text = initialState ? "Ativado" : "Desativado",
-                FontSize = 11,
-                FontWeight = FontWeights.SemiBold,
-                Foreground = initialState ? new SolidColorBrush(Color.FromRgb(56, 189, 248)) : new SolidColorBrush(Color.FromRgb(100, 116, 139)),
-                VerticalAlignment = VerticalAlignment.Center
-            };
-
-            CheckBox sw = new CheckBox
-            {
-                Style = (Style)FindResource("ModernSwitch"),
-                IsChecked = initialState,
-                HorizontalAlignment = HorizontalAlignment.Right
-            };
+            TextBlock lblState = new TextBlock { Text = state ? "Ativado no teu PC" : "Desativado", FontSize = 11, FontWeight = FontWeights.SemiBold, Foreground = state ? new SolidColorBrush(Color.FromRgb(56, 189, 248)) : new SolidColorBrush(Color.FromRgb(100, 116, 139)), VerticalAlignment = VerticalAlignment.Center };
+            CheckBox sw = new CheckBox { Style = (Style)FindResource("ModernSwitch"), IsChecked = state, HorizontalAlignment = HorizontalAlignment.Right };
             allToggleCards.Add(sw);
 
-            sw.Checked += (s, e) =>
-            {
-                lblState.Text = "Ativado";
-                lblState.Foreground = new SolidColorBrush(Color.FromRgb(56, 189, 248));
-                card.BorderBrush = new SolidColorBrush(Color.FromRgb(2, 132, 199));
-                if (!isUpdatingToggles) { RecordActionHistory("[ON] " + title); onToggle(true); CalculateOptimizationScore(); }
-            };
-            sw.Unchecked += (s, e) =>
-            {
-                lblState.Text = "Desativado";
-                lblState.Foreground = new SolidColorBrush(Color.FromRgb(100, 116, 139));
-                card.BorderBrush = new SolidColorBrush(Color.FromRgb(26, 38, 59));
-                if (!isUpdatingToggles) { RecordActionHistory("[OFF] " + title); onToggle(false); CalculateOptimizationScore(); }
-            };
+            sw.Checked += (s, e) => { lblState.Text = "Ativado no teu PC"; lblState.Foreground = new SolidColorBrush(Color.FromRgb(56, 189, 248)); card.BorderBrush = new SolidColorBrush(Color.FromRgb(2, 132, 199)); if (!isUpdatingToggles) { RecordActionHistory("[ON] " + title); onToggle(true); CalculateOptimizationScore(); } };
+            sw.Unchecked += (s, e) => { lblState.Text = "Desativado"; lblState.Foreground = new SolidColorBrush(Color.FromRgb(100, 116, 139)); card.BorderBrush = new SolidColorBrush(Color.FromRgb(26, 38, 59)); if (!isUpdatingToggles) { RecordActionHistory("[OFF] " + title); onToggle(false); CalculateOptimizationScore(); } };
+            DockPanel.SetDock(sw, Dock.Right); bottomBar.Children.Add(sw); bottomBar.Children.Add(lblState); dp.Children.Add(bottomBar);
 
-            DockPanel.SetDock(sw, Dock.Right);
-            bottomBar.Children.Add(sw);
-            bottomBar.Children.Add(lblState);
-            dp.Children.Add(bottomBar);
+            StackPanel sp = new StackPanel();
+            sp.Children.Add(new TextBlock { Text = title, FontSize = 13.5, FontWeight = FontWeights.Bold, Foreground = Brushes.White, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 4) });
+            sp.Children.Add(new TextBlock { Text = desc, FontSize = 11.2, Foreground = new SolidColorBrush(Color.FromRgb(148, 163, 184)), TextWrapping = TextWrapping.Wrap });
+            dp.Children.Add(sp); card.Child = dp; parent.Children.Add(card);
+        }
 
-            StackPanel centerSp = new StackPanel();
-            centerSp.Children.Add(new TextBlock { Text = title, FontSize = 13.5, FontWeight = FontWeights.Bold, Foreground = Brushes.White, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 4) });
-            centerSp.Children.Add(new TextBlock { Text = desc, FontSize = 11.2, Foreground = new SolidColorBrush(Color.FromRgb(148, 163, 184)), TextWrapping = TextWrapping.Wrap });
-            dp.Children.Add(centerSp);
+        private void AddCardBtn(Panel parent, string text, string desc, Action onClick, bool isHero = false)
+        {
+            Border card = new Border { Background = new SolidColorBrush(Color.FromRgb(13, 19, 31)), BorderBrush = isHero ? new SolidColorBrush(Color.FromRgb(2, 132, 199)) : new SolidColorBrush(Color.FromRgb(26, 38, 59)), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(10), Margin = new Thickness(6), Padding = new Thickness(14, 10, 14, 10) };
+            DockPanel dp = new DockPanel();
+            Border badge = new Border { CornerRadius = new CornerRadius(4), Padding = new Thickness(7, 2, 7, 2), HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 0, 0, 6), Background = isHero ? new SolidColorBrush(Color.FromRgb(12, 45, 72)) : new SolidColorBrush(Color.FromRgb(23, 37, 84)), BorderBrush = new SolidColorBrush(Color.FromRgb(2, 132, 199)), BorderThickness = new Thickness(1), Child = new TextBlock { Text = isHero ? "★ DESTAQUE PRO" : "⚡ FERRAMENTA DIRETA", FontSize = 9, FontWeight = FontWeights.Bold, Foreground = new SolidColorBrush(Color.FromRgb(56, 189, 248)) } };
+            DockPanel.SetDock(badge, Dock.Top); dp.Children.Add(badge);
 
-            card.Child = dp;
-            parent.Children.Add(card);
+            Button btn = new Button { Content = "Executar Agora ▶", Background = isHero ? new SolidColorBrush(Color.FromRgb(2, 132, 199)) : new SolidColorBrush(Color.FromRgb(30, 41, 59)), Foreground = Brushes.White, BorderThickness = new Thickness(0), Padding = new Thickness(12, 5, 12, 5), Margin = new Thickness(0, 8, 0, 0), FontSize = 11, FontWeight = FontWeights.Bold, HorizontalAlignment = HorizontalAlignment.Right, Cursor = Cursors.Hand };
+            btn.Click += (s, e) => { try { RecordActionHistory(text); onClick(); CalculateOptimizationScore(); } catch (Exception ex) { Log("⚠️ Aviso: " + ex.Message); } };
+            DockPanel.SetDock(btn, Dock.Bottom); dp.Children.Add(btn);
+
+            StackPanel sp = new StackPanel();
+            sp.Children.Add(new TextBlock { Text = text, FontSize = 13, FontWeight = FontWeights.Bold, Foreground = Brushes.White, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 3) });
+            sp.Children.Add(new TextBlock { Text = desc, FontSize = 11, Foreground = new SolidColorBrush(Color.FromRgb(148, 163, 184)), TextWrapping = TextWrapping.Wrap });
+            dp.Children.Add(sp); card.Child = dp; parent.Children.Add(card);
         }
 
         private void BuildPage0_GaldinoDashboard(Grid page)
         {
-            Grid g = new Grid();
-            g.RowDefinitions.Add(new RowDefinition { Height = new GridLength(255) });
-            g.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-            page.Children.Add(g);
+            Grid g = new Grid(); g.RowDefinitions.Add(new RowDefinition { Height = new GridLength(255) }); g.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) }); page.Children.Add(g);
+            Grid topGrid = new Grid(); topGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) }); topGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1.15, GridUnitType.Star) }); topGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) }); Grid.SetRow(topGrid, 0);
 
-            Grid topGrid = new Grid();
-            topGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            topGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1.15, GridUnitType.Star) });
-            topGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            Grid.SetRow(topGrid, 0);
-
-            Border cLeft = CreateCard("🌡️ SENSORES EM TEMPO REAL (LIBREHARDWAREMONITOR)", 0, 0);
+            Border cLeft = CreateCard("🌡️ SENSORES TÉRMICOS & HARDWARE AO VIVO", 0, 0);
             StackPanel spLeft = (StackPanel)cLeft.Child;
-            txtCpuVal = new TextBlock { Text = "🔥 CPU: A ler sensores...", FontSize = 14, FontWeight = FontWeights.Bold, Foreground = new SolidColorBrush(Color.FromRgb(56, 189, 248)), Margin = new Thickness(0, 10, 0, 6) };
-            txtGpuTempVal = new TextBlock { Text = "🎮 GPU: A ler sensores...", FontSize = 14, FontWeight = FontWeights.Bold, Foreground = new SolidColorBrush(Color.FromRgb(52, 211, 153)), Margin = new Thickness(0, 2, 0, 6) };
-            txtRamVal = new TextBlock { Text = "🧠 RAM Livre: A ler...", FontSize = 14, FontWeight = FontWeights.Bold, Foreground = new SolidColorBrush(Color.FromRgb(192, 132, 252)), Margin = new Thickness(0, 2, 0, 6) };
-            txtDiskVal = new TextBlock { Text = "💾 SSD Principal: A ler...", FontSize = 13, FontWeight = FontWeights.SemiBold, Foreground = Brushes.Silver, Margin = new Thickness(0, 2, 0, 10) };
+            txtCpuVal = new TextBlock { Text = "🔥 CPU: A calibrar sensores...", FontSize = 13.5, FontWeight = FontWeights.Bold, Foreground = new SolidColorBrush(Color.FromRgb(56, 189, 248)), Margin = new Thickness(0, 10, 0, 6) };
+            txtGpuTempVal = new TextBlock { Text = "🎮 GPU: A calibrar sensores...", FontSize = 13.5, FontWeight = FontWeights.Bold, Foreground = new SolidColorBrush(Color.FromRgb(52, 211, 153)), Margin = new Thickness(0, 2, 0, 6) };
+            txtRamVal = new TextBlock { Text = "🧠 RAM Livre: A calcular...", FontSize = 13.5, FontWeight = FontWeights.Bold, Foreground = new SolidColorBrush(Color.FromRgb(192, 132, 252)), Margin = new Thickness(0, 2, 0, 6) };
+            txtDiskVal = new TextBlock { Text = "💾 SSD Principal: A ler...", FontSize = 12.5, FontWeight = FontWeights.SemiBold, Foreground = Brushes.Silver, Margin = new Thickness(0, 2, 0, 10) };
             spLeft.Children.Add(txtCpuVal); spLeft.Children.Add(txtGpuTempVal); spLeft.Children.Add(txtRamVal); spLeft.Children.Add(txtDiskVal);
-            spLeft.Children.Add(CreateSmallBtn("🧹 Limpar Memória Cache / RAM (F1)", () => FlushMemory()));
-            topGrid.Children.Add(cLeft);
+            spLeft.Children.Add(CreateSmallBtn("🧹 Limpar Memória Cache / RAM (F1)", () => FlushMemory())); topGrid.Children.Add(cLeft);
 
             Border cCenter = CreateCard("⚡ CENTRAL DE OTIMIZAÇÃO & IA", 0, 1);
             StackPanel spCenter = (StackPanel)cCenter.Child;
@@ -291,336 +208,252 @@ namespace PCOptimizer
             gaugeGrid.Children.Add(bgRing); gaugeGrid.Children.Add(gaugeRing); gaugeGrid.Children.Add(gaugeCenterText);
             spCenter.Children.Add(gaugeGrid);
 
-            Button btnBoostAll = CreateSmallBtn("🤖 AI Boost Automático (Avaliar & Otimizar 100%)", () => RunAiSmartAutoTuner());
-            btnBoostAll.HorizontalAlignment = HorizontalAlignment.Stretch;
-            spCenter.Children.Add(btnBoostAll);
-            topGrid.Children.Add(cCenter);
+            Button btnBoost = CreateSmallBtn("🤖 AI Boost Automático (Avaliar & Otimizar 100%)", () => RunAiSmartAutoTuner());
+            btnBoost.HorizontalAlignment = HorizontalAlignment.Stretch; spCenter.Children.Add(btnBoost); topGrid.Children.Add(cCenter);
 
             Border cRight = CreateCard("⚔️ SIMULADOR DE BATALHA & MODO OTIMIZADO", 0, 2);
             StackPanel spRight = (StackPanel)cRight.Child;
-            spRight.Children.Add(new TextBlock { Text = "Testa os FPS reais do teu PC com 30.000 unidades em combate ou configura os interruptores do Windows:", FontSize = 11.5, Foreground = Brushes.Silver, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 0, 10) });
+            spRight.Children.Add(new TextBlock { Text = "Testa os FPS reais com 30.000 unidades em combate ou configura os interruptores:", FontSize = 11.5, Foreground = Brushes.Silver, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 0, 10) });
             spRight.Children.Add(CreateSmallBtn("⚔️ Abrir Benchmark 30.000 Unidades!", () => GameSimBenchmark.OpenBattleBenchmarkWindow()));
             spRight.Children.Add(new Border { Height = 6 });
             spRight.Children.Add(CreateSmallBtn("🪟 Ir para Interruptores do Windows ->", () => nav2.IsChecked = true));
             spRight.Children.Add(new Border { Height = 6 });
             spRight.Children.Add(CreateSmallBtn("⚖️ Analisar Gargalo (CPU vs GPU)", () => CheckUptimeAndBottleneck()));
-            topGrid.Children.Add(cRight);
-
-            g.Children.Add(topGrid);
+            topGrid.Children.Add(cRight); g.Children.Add(topGrid);
 
             Border cGraph = CreateCard("📈 MONITOR DE DESEMPENHO EM TEMPO REAL (AZUL = CPU %   |   ROXO = RAM %)", 1, 0);
             StackPanel spGraph = (StackPanel)cGraph.Child;
             graphCanvas = new Canvas { Height = 125, Background = new SolidColorBrush(Color.FromRgb(6, 9, 15)), Margin = new Thickness(0, 8, 0, 0), ClipToBounds = true };
             cpuLine = new Polyline { Stroke = new SolidColorBrush(Color.FromRgb(14, 165, 233)), StrokeThickness = 2.5 };
             ramLine = new Polyline { Stroke = new SolidColorBrush(Color.FromRgb(168, 85, 247)), StrokeThickness = 2.5 };
-            graphCanvas.Children.Add(ramLine); graphCanvas.Children.Add(cpuLine);
-            spGraph.Children.Add(graphCanvas);
-            g.Children.Add(cGraph);
+            graphCanvas.Children.Add(ramLine); graphCanvas.Children.Add(cpuLine); spGraph.Children.Add(graphCanvas); g.Children.Add(cGraph);
         }
 
         private void RunAiSmartAutoTuner()
         {
-            Log("🤖 [AI AUTO-TUNER] A avaliar a arquitetura do teu PC (CPU, GPU, RAM e Registo)...");
+            Log("🤖 [AI AUTO-TUNER] A avaliar arquitetura de CPU, GPU, RAM e Registo...");
             isUpdatingToggles = true;
             foreach (CheckBox cb in allToggleCards) cb.IsChecked = true;
             isUpdatingToggles = false;
-
-            RunFullIsoLiteTransformation();
-            OptimizeForGames();
-            OptimizePeripherals();
-            DisableFastStartup();
-            RegisterPermanentVipGames();
-            ApplyCpuZeroAvoidanceToRunningGames();
-            CalculateOptimizationScore();
-
-            string profile = totalRamMb >= 30000 ? "Perfil Enthusiast 32GB+ (Zero Compressão, Núcleo 0 Isolado, HAGS + MSI Mode Ativos)" : "Perfil Gaming Pro 16GB (Auto-Guard RAM Ativo + SVCHOST Agrupado)";
-            Log($"🏆 [AI BOOST 100% CONCLUÍDO] Aplicado: {profile}!");
+            RunFullIsoLiteTransformation(); OptimizeForGames(); OptimizePeripherals(); DisableFastStartup(); RegisterPermanentVipGames(); ApplyCpuZeroAvoidanceToRunningGames(); CalculateOptimizationScore();
+            Log($"🏆 [AI BOOST 100%] Perfil Ultra Gaming aplicado com sucesso!");
         }
+
         private void BuildPage1_ToggleCardsWindows(Grid page)
         {
             ScrollViewer sv = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
             UniformGrid ug = new UniformGrid { Columns = 3, Rows = 4 };
-            sv.Content = ug;
-            page.Children.Add(sv);
+            sv.Content = ug; page.Children.Add(sv);
 
-            AddSwitchCard(ug, "REC", "Plano de Energia Máximo", "Ativa o plano oculto de Desempenho Máximo da Microsoft para evitar quedas de frequência no processador.", true,
-                (on) => { if (on) RunCmd("powercfg -duplicatescheme e9a42b02-d5df-448d-aa00-03f14749eb61", "Plano Máximo ativo!"); });
+            bool sPrio = CheckRegInt(@"HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\PriorityControl", "Win32PrioritySeparation", 38);
+            bool sDvr = CheckRegInt(@"HKEY_CURRENT_USER\System\GameConfigStore", "GameDVR_Enabled", 0);
+            bool sBg = CheckRegInt(@"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\BackgroundAccessApplications", "GlobalUserDisabled", 1);
+            bool sTrans = CheckRegInt(@"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize", "EnableTransparency", 0);
+            bool sGameMode = CheckRegInt(@"HKEY_CURRENT_USER\Software\Microsoft\GameBar", "AutoGameModeEnabled", 1);
+            bool sSvc = !CheckRegInt(@"HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control", "SvcHostSplitThresholdInKB", 3670016);
+            bool sCopilot = CheckRegInt(@"HKEY_CURRENT_USER\Software\Policies\Microsoft\Windows\WindowsCopilot", "TurnOffWindowsCopilot", 1);
+            bool sHiber = CheckRegInt(@"HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Session Manager\Power", "HiberbootEnabled", 0);
+            bool sEdge = CheckRegInt(@"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Edge", "BackgroundModeEnabled", 0);
 
-            AddSwitchCard(ug, "REC", "Desligar a suspensão do sistema", "Impede que o computador suspenda discos ou portas USB durante partidas ou transmissões longas.", true,
-                (on) => { if (on) DisableUsbSuspend(); });
-
-            AddSwitchCard(ug, "REC", "Priorizar programas em 1.º plano", "Ajusta o Win32PrioritySeparation (Hex 26) para focar 100% do CPU no jogo que está aberto à tua frente.", true,
-                (on) => { if (on) BoostMsiAndGames(); else SafeRegSet(@"HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\PriorityControl", "Win32PrioritySeparation", 2); });
-
-            AddSwitchCard(ug, "REC", "Manter todos os núcleos acordados", "Desativa o Core Parking do Windows para que todos os núcleos do teu CPU respondam sem atraso.", true,
-                (on) => { if (on) UnparkCpuCores(); });
-
-            AddSwitchCard(ug, "REC", "Não gravar a tela de últimos 30 seg", "Desativa o Xbox GameDVR em segundo plano que consome recursos da placa gráfica e causa perda de FPS.", true,
-                (on) => { if (on) OptimizeForGames(); else SafeRegSet(@"HKEY_CURRENT_USER\System\GameConfigStore", "GameDVR_Enabled", 1); });
-
-            AddSwitchCard(ug, "REC", "Desligar apps em 2.º plano", "Proíbe aplicações da Microsoft Store de rodarem escondidas a consumir memória RAM e processador.", true,
-                (on) => { if (on) KillBackgroundApps(); else SafeRegSet(@"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\BackgroundAccessApplications", "GlobalUserDisabled", 0); });
-
-            AddSwitchCard(ug, "REC", "Windows Rápido (Menos transparências)", "Desativa efeitos pesados de vidro/transparência para libertar memória de vídeo (VRAM) para os jogos.", false,
-                (on) => SafeRegSet(@"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize", "EnableTransparency", on ? 0 : 1));
-
-            AddSwitchCard(ug, "REC", "Modo de Jogo do Windows Ativo", "Garante que o Game Mode oficial está ativo para dar acesso prioritário da placa gráfica ao teu jogo e OBS.", true,
-                (on) => SafeRegSet(@"HKEY_CURRENT_USER\Software\Microsoft\GameBar", "AutoGameModeEnabled", on ? 1 : 0));
-
-            AddSwitchCard(ug, "REC", "Otimizar processos SVCHOST na RAM", "Agrupa os serviços internos do Windows na tua memória RAM para reduzir até 70 processos no Gestor de Tarefas.", true,
-                (on) => { if (on) OptimizeSvchostProcesses(); else SafeRegSet(@"HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control", "SvcHostSplitThresholdInKB", 3670016); });
-
-            AddSwitchCard(ug, "REC", "Desativar IA (Copilot, Recall e Bing)", "Desliga as ferramentas pesadas de Inteligência Artificial do Windows 11, Widgets e pesquisa web no Iniciar.", true,
-                (on) => { if (on) DisableAIAndBloat(); });
-
-            AddSwitchCard(ug, "WARN", "Desativar Hibernação (+10GB no SSD)", "Apaga o ficheiro hiberfil.sys e desativa o Fast Startup para limpar o Kernel do Windows ao desligar.", true,
-                (on) => RunCmd(on ? "powercfg -h off" : "powercfg -h on", on ? "Hibernação desligada!" : "Hibernação reativada!"));
-
-            AddSwitchCard(ug, "WARN", "Bloquear Microsoft Edge em 2.º plano", "Impede que o navegador Edge e processos WebView2 continuem abertos escondidos após fechares a janela.", true,
-                (on) => { if (on) DisableEdgeBackground(); else SafeRegSet(@"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Edge", "BackgroundModeEnabled", 1); });
+            AddSwitchCard(ug, "REC", "Plano de Energia Máximo", "Ativa o plano oculto de Desempenho Máximo da Microsoft.", sPrio, (on) => { if (on) RunCmd("powercfg -duplicatescheme e9a42b02-d5df-448d-aa00-03f14749eb61", "Plano Máximo ativo!"); });
+            AddSwitchCard(ug, "REC", "Desligar suspensão do sistema", "Impede que o Windows suspenda portas USB e discos durante os jogos.", sPrio, (on) => { if (on) DisableUsbSuspend(); });
+            AddSwitchCard(ug, "REC", "Priorizar programas em 1.º plano", "Ajusta o Win32PrioritySeparation (Hex 26) para focar o CPU no jogo.", sPrio, (on) => { if (on) BoostMsiAndGames(); else SafeRegSet(@"HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\PriorityControl", "Win32PrioritySeparation", 2); });
+            AddSwitchCard(ug, "REC", "Manter núcleos acordados", "Desativa o Core Parking para todos os núcleos responderem imediatamente.", sPrio, (on) => { if (on) UnparkCpuCores(); });
+            AddSwitchCard(ug, "REC", "Desativar gravação de tela 30 seg", "Desativa o Xbox GameDVR que consome recursos e rouba FPS.", sDvr, (on) => { if (on) OptimizeForGames(); else SafeRegSet(@"HKEY_CURRENT_USER\System\GameConfigStore", "GameDVR_Enabled", 1); });
+            AddSwitchCard(ug, "REC", "Desligar apps em 2.º plano", "Proíbe aplicações da loja de rodarem escondidas a gastar RAM.", sBg, (on) => { if (on) KillBackgroundApps(); else SafeRegSet(@"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\BackgroundAccessApplications", "GlobalUserDisabled", 0); });
+            AddSwitchCard(ug, "REC", "Menos transparências visuais", "Desativa efeitos pesados de vidro para libertar VRAM para os jogos.", sTrans, (on) => SafeRegSet(@"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize", "EnableTransparency", on ? 0 : 1));
+            AddSwitchCard(ug, "REC", "Modo de Jogo do Windows Ativo", "Dá acesso prioritário da placa gráfica ao teu jogo e OBS.", sGameMode, (on) => SafeRegSet(@"HKEY_CURRENT_USER\Software\Microsoft\GameBar", "AutoGameModeEnabled", on ? 1 : 0));
+            AddSwitchCard(ug, "REC", "Otimizar SVCHOST na RAM", "Agrupa processos do Windows para reduzir até 70 tarefas no Gestor de Tarefas.", sSvc, (on) => { if (on) OptimizeSvchostProcesses(); else SafeRegSet(@"HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control", "SvcHostSplitThresholdInKB", 3670016); });
+            AddSwitchCard(ug, "REC", "Desativar IA (Copilot e Bing)", "Desliga o Copilot, Widgets e pesquisa web no Menu Iniciar.", sCopilot, (on) => { if (on) DisableAIAndBloat(); else SafeRegSet(@"HKEY_CURRENT_USER\Software\Policies\Microsoft\Windows\WindowsCopilot", "TurnOffWindowsCopilot", 0); });
+            AddSwitchCard(ug, "WARN", "Desativar Hibernação (+10GB)", "Apaga o hiberfil.sys e desativa o Fast Startup para limpar o Kernel.", sHiber, (on) => { DisableFastStartup(); RunCmd(on ? "powercfg -h off" : "powercfg -h on", "Hibernação ajustada!"); });
+            AddSwitchCard(ug, "WARN", "Bloquear Edge em 2.º plano", "Impede o Microsoft Edge de ficar aberto escondido após fechar.", sEdge, (on) => { if (on) DisableEdgeBackground(); else SafeRegSet(@"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Edge", "BackgroundModeEnabled", 1); });
         }
 
         private void BuildPage2_PerGameOptimizer(Grid page)
         {
             Border card = CreateCard("🎮 AJUSTES ESPECÍFICOS DO JOGO (CADA JOGO NO MÁXIMO)", 0, 0);
             StackPanel sp = (StackPanel)card.Child;
-
             DockPanel topBar = new DockPanel { Margin = new Thickness(0, 8, 0, 12) };
-            topBar.Children.Add(new TextBlock { Text = "Seleciona o teu Jogo Competitivo:  ", FontSize = 13, FontWeight = FontWeights.Bold, Foreground = Brushes.White, VerticalAlignment = VerticalAlignment.Center });
-
+            topBar.Children.Add(new TextBlock { Text = "Seleciona o teu Jogo:  ", FontSize = 13, FontWeight = FontWeights.Bold, Foreground = Brushes.White, VerticalAlignment = VerticalAlignment.Center });
             cmbGameSelect = new ComboBox { Width = 340, Height = 30, FontSize = 12.5, FontWeight = FontWeights.Bold };
-            string[] gamesList = {
-                "Counter-Strike 2 (cs2.exe)",
-                "Valorant (VALORANT-Win64-Shipping.exe)",
-                "Call of Duty / Warzone (cod.exe)",
-                "Fortnite (FortniteClient-Win64-Shipping.exe)",
-                "Apex Legends (r5apex.exe)",
-                "Rust (RustClient.exe)",
-                "EA Sports FC / FIFA (FC25.exe)",
-                "Grand Theft Auto V / FiveM (GTA5.exe)",
-                "League of Legends (League of Legends.exe)",
-                "Rainbow Six Siege (RainbowSix.exe)"
-            };
-            foreach (string gm in gamesList) cmbGameSelect.Items.Add(gm);
-            cmbGameSelect.SelectedIndex = 0;
-            topBar.Children.Add(cmbGameSelect);
-            sp.Children.Add(topBar);
+            string[] games = { "Counter-Strike 2 (cs2.exe)", "Valorant (VALORANT-Win64-Shipping.exe)", "Call of Duty / Warzone (cod.exe)", "Fortnite (FortniteClient-Win64-Shipping.exe)", "Apex Legends (r5apex.exe)", "Rust (RustClient.exe)", "EA Sports FC / FIFA (FC25.exe)", "GTA V / FiveM (GTA5.exe)", "League of Legends (League of Legends.exe)", "Rainbow Six Siege (RainbowSix.exe)" };
+            foreach (string gm in games) cmbGameSelect.Items.Add(gm); cmbGameSelect.SelectedIndex = 0; topBar.Children.Add(cmbGameSelect); sp.Children.Add(topBar);
 
-            UniformGrid ugGameOpts = new UniformGrid { Columns = 2, Rows = 3 };
-            AddSwitchCard(ugGameOpts, "REC", "Liberar o núcleo 0 (Core 0 Free)", "Não usa o primeiro núcleo da CPU, onde o Windows concentra as tarefas de fundo do sistema.", true, (on) => { });
-            AddSwitchCard(ugGameOpts, "REC", "Prioridade Alta Permanente (CPU/GPU)", "Dá mais atenção do processador e da placa gráfica para este executável sempre que o jogo abrir.", true, (on) => { });
-            AddSwitchCard(ugGameOpts, "REC", "Só núcleos físicos (Sem Hyper-Threading)", "Evita núcleos virtuais (SMT) e usa apenas os núcleos físicos reais do teu processador durante a partida.", false, (on) => { });
-            AddSwitchCard(ugGameOpts, "REC", "Placa de vídeo dedicada (Alto Desempenho)", "Obriga o Windows a usar a tua placa gráfica principal em modo de potência máxima para este jogo.", true, (on) => { });
-            AddSwitchCard(ugGameOpts, "REC", "Desativar Otimizações de Ecrã Inteiro (FSO)", "Reduz o input lag da mira forçando o jogo a comunicar diretamente com o monitor.", true, (on) => { });
-            AddSwitchCard(ugGameOpts, "REC", "Limpar RAM antes de iniciar o jogo", "Liberta a memória Standby presa antes de aplicar o perfil de competição ao jogo selecionado.", true, (on) => { });
-            sp.Children.Add(ugGameOpts);
+            bool vipActive = CheckRegInt(@"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\cs2.exe\PerfOptions", "CpuPriorityClass", 3);
+            bool fsoActive = CheckRegInt(@"HKEY_CURRENT_USER\System\GameConfigStore", "GameDVR_FSEBehaviorMode", 2);
 
-            StackPanel bottomBtns = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(6, 10, 0, 0) };
-            bottomBtns.Children.Add(CreateSmallBtn("💾 Salvar Ajustes para Este Jogo & Todos os Jogos VIP", () =>
-            {
-                RegisterPermanentVipGames();
-                ApplyCpuZeroAvoidanceToRunningGames();
-                FlushMemory();
-                Log($"🏆 [PERFIL GUARDADO] Núcleo 0 Livre e Prioridade Alta aplicados a {cmbGameSelect.SelectedItem}!");
-            }));
-            bottomBtns.Children.Add(CreateSmallBtn("⏪ Restaurar Padrão nos Jogos", () => RemovePermanentVipGames()));
-            sp.Children.Add(bottomBtns);
-            page.Children.Add(card);
+            UniformGrid ug = new UniformGrid { Columns = 2, Rows = 3 };
+            AddSwitchCard(ug, "REC", "Liberar o núcleo 0 (Core 0 Free)", "Não usa o primeiro núcleo do CPU onde o Windows concentra o lixo.", vipActive, (on) => { if (on) ApplyCpuZeroAvoidanceToRunningGames(); });
+            AddSwitchCard(ug, "REC", "Prioridade Alta Permanente", "Dá foco máximo do processador e placa gráfica a este executável.", vipActive, (on) => { if (on) RegisterPermanentVipGames(); else RemovePermanentVipGames(); });
+            AddSwitchCard(ug, "REC", "Só núcleos físicos (Sem SMT)", "Usa apenas os núcleos físicos reais do processador na partida.", false, (on) => { });
+            AddSwitchCard(ug, "REC", "Placa de vídeo dedicada", "Força potência máxima da GPU principal para este jogo.", vipActive, (on) => { });
+            AddSwitchCard(ug, "REC", "Desativar FSO (Ecrã Inteiro)", "Reduz o input lag da mira forçando o ecrã inteiro exclusivo.", fsoActive, (on) => SafeRegSet(@"HKEY_CURRENT_USER\System\GameConfigStore", "GameDVR_FSEBehaviorMode", on ? 2 : 0));
+            AddSwitchCard(ug, "REC", "Limpar RAM antes de jogar", "Liberta a memória Standby presa antes de abrir a partida.", true, (on) => { if (on) FlushMemory(); });
+            sp.Children.Add(ug);
+
+            StackPanel bBtns = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(6, 10, 0, 0) };
+            bBtns.Children.Add(CreateSmallBtn("💾 Salvar Ajustes para Todos os Jogos VIP", () => { RegisterPermanentVipGames(); ApplyCpuZeroAvoidanceToRunningGames(); FlushMemory(); Log($"🏆 [PERFIL GUARDADO] Núcleo 0 Livre e Prioridade Alta ativos para {cmbGameSelect.SelectedItem}!"); }));
+            bBtns.Children.Add(CreateSmallBtn("⏪ Restaurar Padrão", () => RemovePermanentVipGames()));
+            sp.Children.Add(bBtns); page.Children.Add(card);
         }
 
         private void ApplyCpuZeroAvoidanceToRunningGames()
         {
-            int c = Environment.ProcessorCount;
-            if (c <= 2) return;
+            int c = Environment.ProcessorCount; if (c <= 2) return;
             long mask = ((1L << c) - 1) & ~1L;
-            string[] targets = { "cs2", "VALORANT-Win64-Shipping", "cod", "FortniteClient-Win64-Shipping", "r5apex", "RustClient", "GTA5" };
-            foreach (string t in targets)
-                foreach (Process p in Process.GetProcessesByName(t))
-                    try { p.ProcessorAffinity = new IntPtr(mask); p.PriorityClass = ProcessPriorityClass.High; } catch { }
+            foreach (string t in new[] { "cs2", "VALORANT-Win64-Shipping", "cod", "FortniteClient-Win64-Shipping", "r5apex", "RustClient", "GTA5" })
+                foreach (Process p in Process.GetProcessesByName(t)) try { p.ProcessorAffinity = new IntPtr(mask); p.PriorityClass = ProcessPriorityClass.High; } catch { }
         }
 
         private void BuildPage3_GamingSwitches(Grid page)
         {
             ScrollViewer sv = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
             UniformGrid ug = new UniformGrid { Columns = 3, Rows = 4 };
-            sv.Content = ug;
-            page.Children.Add(sv);
+            sv.Content = ug; page.Children.Add(sv);
 
-            AddSwitchCard(ug, "REC", "Rato e Teclado Sem Atraso (1:1)", "Desativa a aceleração do ponteiro do rato e reduz o buffer de fila (QueueSize) para resposta imediata.", true,
-                (on) => { if (on) OptimizePeripherals(); else UndoPeripherals(); });
+            bool sMouse = CheckRegStr(@"HKEY_CURRENT_USER\Control Panel\Mouse", "MouseSpeed", "0");
+            bool sHags = CheckRegInt(@"HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\GraphicsDrivers", "HwSchMode", 2);
+            bool sPowerThrot = CheckRegInt(@"HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Power\PowerThrottling", "PowerThrottlingOff", 1);
+            bool sNet = CheckRegInt(@"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile", "NetworkThrottlingIndex", -1);
 
-            AddSwitchCard(ug, "REC", "Agendamento de GPU por Hardware (HAGS)", "Passa a gestão de memória de vídeo para a própria Placa Gráfica, aumentando FPS e ativando DLSS 3/FrameGen.", true,
-                (on) => SafeRegSet(@"HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\GraphicsDrivers", "HwSchMode", on ? 2 : 1));
+            AddSwitchCard(ug, "REC", "Rato e Teclado Pro (1:1)", "Desativa aceleração artificial e reduz buffer de fila de resposta.", sMouse, (on) => { if (on) OptimizePeripherals(); else UndoPeripherals(); });
+            AddSwitchCard(ug, "REC", "Agendamento GPU HAGS", "Ativa o Agendamento de GPU por Hardware para mais FPS e FrameGen.", sHags, (on) => SafeRegSet(@"HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\GraphicsDrivers", "HwSchMode", on ? 2 : 1));
+            AddSwitchCard(ug, "REC", "Modo MSI na Placa Gráfica", "Comunicação PCIe direta por mensagem para menor atraso de GPU.", sHags, (on) => { if (on) EnableGpuMsiMode(); });
+            AddSwitchCard(ug, "REC", "Desligar Power Throttling", "Desativa o limitador de energia que baixa os GHz do CPU.", sPowerThrot, (on) => SafeRegSet(@"HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Power\PowerThrottling", "PowerThrottlingOff", on ? 1 : 0));
+            AddSwitchCard(ug, "WARN", "Desativar Isolamento VBS", "Desliga virtualização do Windows 11 para ganhar até +15% FPS.", false, (on) => RunCmd(on ? "bcdedit /set hypervisorlaunchtype off" : "bcdedit /set hypervisorlaunchtype auto", "VBS ajustado!"));
+            AddSwitchCard(ug, "REC", "Otimizar Relógio No-Tick", "Desativa o Dynamic Tick para frametimes mais estáveis nos jogos.", sMouse, (on) => { if (on) OptimizeBcdTimer(); });
+            AddSwitchCard(ug, "REC", "Otimizar TCP + Nagle Off", "Ativa TCPNoDelay=1 para enviar tiros sem agrupamento de pacotes.", sNet, (on) => { if (on) OptimizeNetworkForGaming(); else UndoNetworkSettings(); });
+            AddSwitchCard(ug, "REC", "Tirar Poupança de Rede", "Garante potência máxima contínua na placa Ethernet/Wi-Fi.", sNet, (on) => { if (on) DisableNicPowerSave(); });
+            AddSwitchCard(ug, "REC", "Parar Telemetria Microsoft", "Desativa a recolha em 2.º plano que gasta rede e disco.", sMouse, (on) => { if (on) StopUselessServices(); });
+            AddSwitchCard(ug, "REC", "Desativar Tarefas Ocultas", "Desliga tarefas silenciosas da Microsoft que causam engasgos.", sMouse, (on) => { if (on) DisableHiddenScheduledTasks(); });
+            AddSwitchCard(ug, "REC", "Refrigeração Ativa no CPU", "Acelera as ventoinhas antes de o CPU baixar os MHz por calor.", sPowerThrot, (on) => { if (on) EnableActiveCoolingPolicy(); });
+            AddSwitchCard(ug, "REC", "Limpar Shaders GPU", "Apaga ficheiros antigos de shaders DirectX/NVIDIA para tirar stuttering.", false, (on) => { if (on) CleanGpuCache(); });
+        }
 
-            AddSwitchCard(ug, "REC", "Modo MSI na Placa Gráfica (PCIe)", "Ativa Message Signaled Interrupts na gráfica para diminuir a latência de comunicação com o CPU.", true,
-                (on) => { if (on) EnableGpuMsiMode(); });
+        private void BuildPage_NiniteAppStore(Grid page)
+        {
+            Border card = CreateCard("📦 NINITE STORE (36 APPS POR CATEGORIA - INSTALAÇÃO SILENCIOSA 1-CLIQUE!)", 0, 0);
+            StackPanel sp = (StackPanel)card.Child;
+            sp.Children.Add(new TextBlock { Text = "Estilo Ninite! Marca os programas que queres e instala tudo automaticamente sem cliques repetidos:", FontSize = 11.5, Foreground = Brushes.Silver, Margin = new Thickness(0, 4, 0, 8) });
 
-            AddSwitchCard(ug, "REC", "Desligar Estrangulamento de Energia", "Desativa o Power Throttling do Windows para que o processador mantenha os GHz máximos nos jogos.", true,
-                (on) => SafeRegSet(@"HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Power\PowerThrottling", "PowerThrottlingOff", on ? 1 : 0));
+            ScrollViewer sv = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Height = 265 };
+            UniformGrid catGrid = new UniformGrid { Columns = 3, Rows = 2 };
+            sv.Content = catGrid; storeCheckBoxes.Clear();
 
-            AddSwitchCard(ug, "WARN", "Desativar Isolamento de Núcleo (VBS)", "Desliga a virtualização VBS do Windows 11 que pode roubar até 10% a 15% de FPS em jogos competitivos.", false,
-                (on) => RunCmd(on ? "bcdedit /set hypervisorlaunchtype off" : "bcdedit /set hypervisorlaunchtype auto", on ? "VBS Desativado!" : "VBS Ativado!"));
+            AddNiniteCategory(catGrid, "🌐 NAVEGADORES", new[,] { { "Brave (Sem Anúncios)", "Brave.Brave" }, { "Google Chrome", "Google.Chrome" }, { "Mozilla Firefox", "Mozilla.Firefox" }, { "Opera GX Gamer", "Opera.OperaGX" }, { "LibreWolf Privado", "LibreWolf.LibreWolf" }, { "Tor Browser", "TorProject.TorBrowser" } });
+            AddNiniteCategory(catGrid, "🎮 LAUNCHERS DE JOGOS", new[,] { { "Steam", "Valve.Steam" }, { "Epic Games", "EpicGames.EpicGamesLauncher" }, { "Battle.net (CoD)", "Blizzard.BattleNet" }, { "EA App (FIFA)", "ElectronicArts.EADesktop" }, { "Ubisoft Connect", "Ubisoft.Connect" }, { "GOG Galaxy", "GOG.Galaxy" } });
+            AddNiniteCategory(catGrid, "💬 VOZ, STREAM & MÚSICA", new[,] { { "Discord", "Discord.Discord" }, { "OBS Studio Oficial", "OBSProject.OBSStudio" }, { "Spotify", "Spotify.Spotify" }, { "EarTrumpet Áudio", "File-New-Project.EarTrumpet" }, { "VoiceMeeter Banana", "VB-Audio.Voicemeeter.Banana" }, { "Elgato Stream Deck", "Elgato.StreamDeck" } });
+            AddNiniteCategory(catGrid, "🛠️ HARDWARE & RGB", new[,] { { "Fan Control (Fans)", "Rem0o.FanControl" }, { "OpenRGB (Luzes)", "CalcProgrammer1.OpenRGB" }, { "MSI Afterburner", "Guru3D.Afterburner" }, { "HWiNFO64 (Sensores)", "REALiX.HWiNFO" }, { "CPU-Z (Specs)", "CPUID.CPU-Z" }, { "NVCleanstall", "TechPowerUp.NVCleanstall" } });
+            AddNiniteCategory(catGrid, "📦 UTILITÁRIOS (NINITE)", new[,] { { "7-Zip Extrator", "7zip.7zip" }, { "WinRAR Oficial", "RARLab.WinRAR" }, { "VLC Media Player", "VideoLAN.VLC" }, { "ShareX Prints", "ShareX.ShareX" }, { "Notepad++ Editor", "Notepad++.Notepad++" }, { "Everything Busca", "voidtools.Everything" } });
+            AddNiniteCategory(catGrid, "🛡️ RUNTIMES & SEGURANÇA", new[,] { { "DirectX Runtime", "Microsoft.DirectX" }, { "Visual C++ (x64)", "Microsoft.VCRedist.2015+.x64" }, { "Visual C++ (x86)", "Microsoft.VCRedist.2015+.x86" }, { "CapFrameX (1% Low)", "CXWorld.CapFrameX" }, { "Revo Uninstaller", "RevoUninstaller.RevoUninstaller" }, { "Malwarebytes", "Malwarebytes.Malwarebytes" } });
+            sp.Children.Add(sv);
 
-            AddSwitchCard(ug, "REC", "Otimizar Relógio do Sistema (No-Tick)", "Desativa o Dynamic Tick do relógio interno para tornar os frametimes (1% Lows) muito mais suaves.", true,
-                (on) => { if (on) OptimizeBcdTimer(); });
+            StackPanel spBtns = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(4, 10, 0, 0) };
+            spBtns.Children.Add(CreateSmallBtn("🚀 Instalar Marcados (Modo Silencioso Ninite)", () => InstallSelectedStoreApps()));
+            spBtns.Children.Add(CreateSmallBtn("☑️ Pack 'Formatou o PC'", () => SelectNinitePreset(new[] { "Brave.Brave", "Discord.Discord", "Valve.Steam", "7zip.7zip", "VideoLAN.VLC", "Microsoft.DirectX", "Microsoft.VCRedist.2015+.x64", "Microsoft.VCRedist.2015+.x86", "File-New-Project.EarTrumpet" })));
+            spBtns.Children.Add(CreateSmallBtn("🎥 Pack Streamer", () => SelectNinitePreset(new[] { "OBSProject.OBSStudio", "Discord.Discord", "File-New-Project.EarTrumpet", "VB-Audio.Voicemeeter.Banana", "ShareX.ShareX", "Spotify.Spotify" })));
+            spBtns.Children.Add(CreateSmallBtn("🧹 Desmarcar Tudo", () => { foreach (var c in storeCheckBoxes) c.IsChecked = false; }));
+            sp.Children.Add(spBtns); page.Children.Add(card);
+        }
 
-            AddSwitchCard(ug, "REC", "Otimizar Rede TCP + Desativar Nagle", "Ativa TCPNoDelay=1 e desliga o Network Throttling para enviar cada tiro imediatamente sem atraso de pacotes.", true,
-                (on) => { if (on) OptimizeNetworkForGaming(); else UndoNetworkSettings(); });
+        private void AddNiniteCategory(Panel parent, string title, string[,] items)
+        {
+            Border b = new Border { Background = new SolidColorBrush(Color.FromRgb(9, 13, 22)), BorderBrush = new SolidColorBrush(Color.FromRgb(26, 38, 59)), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(8), Margin = new Thickness(4), Padding = new Thickness(10, 8, 10, 8) };
+            StackPanel sp = new StackPanel(); sp.Children.Add(new TextBlock { Text = title, FontSize = 11, FontWeight = FontWeights.Bold, Foreground = new SolidColorBrush(Color.FromRgb(56, 189, 248)), Margin = new Thickness(0, 0, 0, 6) });
+            for (int i = 0; i < items.GetLength(0); i++)
+            {
+                CheckBox cb = new CheckBox { Content = items[i, 0], Tag = items[i, 1], Foreground = Brushes.White, FontSize = 11.5, Margin = new Thickness(0, 2.5, 0, 2.5), Cursor = Cursors.Hand };
+                storeCheckBoxes.Add(cb); sp.Children.Add(cb);
+            }
+            b.Child = sp; parent.Children.Add(b);
+        }
 
-            AddSwitchCard(ug, "REC", "Tirar Poupança da Placa de Rede", "Impede o Windows de baixar a energia da placa Ethernet/Wi-Fi, evitando picos de ping.", true,
-                (on) => { if (on) DisableNicPowerSave(); });
+        private void SelectNinitePreset(string[] ids)
+        {
+            foreach (var cb in storeCheckBoxes) cb.IsChecked = ids.Contains(cb.Tag.ToString());
+            Log("📦 Pack Ninite selecionado! Clica em 'Instalar Marcados' para começar.");
+        }
 
-            AddSwitchCard(ug, "REC", "Parar Telemetria Microsoft e Mapas", "Desativa a recolha contínua de dados (DiagTrack) que usa disco e internet em segundo plano.", true,
-                (on) => { if (on) StopUselessServices(); });
-
-            AddSwitchCard(ug, "REC", "Desativar Tarefas Agendadas Ocultas", "Desliga diagnósticos automáticos silenciosos da Microsoft que causam travamentos momentâneos.", true,
-                (on) => { if (on) DisableHiddenScheduledTasks(); });
-
-            AddSwitchCard(ug, "REC", "Refrigeração Ativa 100% no Processador", "Obriga o sistema a acelerar as ventoinhas antes de reduzir a velocidade do CPU por temperatura.", true,
-                (on) => { if (on) EnableActiveCoolingPolicy(); });
-
-            AddSwitchCard(ug, "REC", "Limpar Cache de Shaders DirectX/GPU", "Elimina ficheiros de cache de shaders antigos da NVIDIA/AMD para corrigir engasgos após updates.", false,
-                (on) => { if (on) CleanGpuCache(); });
+        private void InstallSelectedStoreApps()
+        {
+            var cmds = storeCheckBoxes.Where(c => c.IsChecked == true).Select(c => $"winget install -e --id {c.Tag} --accept-package-agreements --accept-source-agreements").ToList();
+            if (cmds.Count > 0) RunCmdVisible(string.Join(" & ", cmds), $"A instalar {cmds.Count} aplicações via Winget Ninite...");
+            else Log("⚠️ Marca pelo menos uma aplicação nas caixas acima!");
         }
 
         private void BuildPage_VipGamesAndDisplay(Grid page)
         {
             UniformGrid ug = CreateButtonGrid(page);
-            AddCardBtn(ug, "👑 Gravar Jogos VIP (Prioridade Eterna)", () => RegisterPermanentVipGames(), true);
-            AddCardBtn(ug, "⏪ Remover Prioridade Eterna Jogos", () => RemovePermanentVipGames());
-            AddCardBtn(ug, "🛡️ Blindar Ficheiro HOSTS (Anti-Spy)", () => ApplyHostsTelemetryBlock());
-
-            AddCardBtn(ug, "🎯 Mudar Ecrã p/ 1280x960 (4:3 CS2)", () => ChangeScreenResolution(1280, 960));
-            AddCardBtn(ug, "🎯 Mudar Ecrã p/ 1440x1080 (4:3 HD)", () => ChangeScreenResolution(1440, 1080));
-            AddCardBtn(ug, "🖥️ Repor Ecrã 1920x1080 (Full HD)", () => ChangeScreenResolution(1920, 1080));
-
-            AddCardBtn(ug, "🖥️ Repor Ecrã 2560x1440 (2K QHD)", () => ChangeScreenResolution(2560, 1440));
-            AddCardBtn(ug, "🔑 Ler Chave Original Windows (BIOS)", () => ReadBiosWindowsKey());
-            AddCardBtn(ug, "⚖️ Calcular Gargalo (CPU vs GPU vs RAM)", () => CheckUptimeAndBottleneck());
-
-            AddCardBtn(ug, "🎙️ Testar Microfone (Ouvir a Minha Voz)", () => RunCmd("control mmsys.cpl,,1", "Painel de Escuta de Microfone aberto!"));
-            AddCardBtn(ug, "🔓 Limpar Bloqueios Ficheiros HOSTS", () => ResetHostsFile());
-            AddCardBtn(ug, "⚡ Abrir Gestor de Cores Calibração", () => RunCmd("dccw.exe", "Calibrador de Cores aberto!"));
+            AddCardBtn(ug, "👑 Gravar Jogos VIP (Prioridade Eterna)", "CS2, Valorant, CoD, Fortnite, Apex, Rust e GTA V rodam sempre em Prioridade Alta.", () => RegisterPermanentVipGames(), true);
+            AddCardBtn(ug, "⏪ Remover Prioridade Eterna Jogos", "Restaura o comportamento padrão do Windows para os executáveis de jogos.", () => RemovePermanentVipGames());
+            AddCardBtn(ug, "🛡️ Blindar Ficheiro HOSTS (Anti-Spy)", "Bloqueia na raiz os servidores de telemetria e anúncios da Microsoft.", () => ApplyHostsTelemetryBlock());
+            AddCardBtn(ug, "🎯 Ecrã 1280x960 (4:3 Stretched CS2)", "Muda instantaneamente para 1280x960 competitivo sem abrir painel da gráfica.", () => ChangeScreenResolution(1280, 960));
+            AddCardBtn(ug, "🎯 Ecrã 1440x1080 (4:3 HD Competitivo)", "Muda para 1440x1080 (4:3 esticado em alta definição para CS2/Valorant).", () => ChangeScreenResolution(1440, 1080));
+            AddCardBtn(ug, "🖥️ Repor Ecrã 1920x1080 (Full HD)", "Volta o monitor para a resolução padrão Full HD 1920x1080 num clique.", () => ChangeScreenResolution(1920, 1080));
+            AddCardBtn(ug, "🖥️ Repor Ecrã 2560x1440 (2K QHD)", "Volta o monitor para a resolução nativa 2K QHD (2560x1440) num clique.", () => ChangeScreenResolution(2560, 1440));
+            AddCardBtn(ug, "🔑 Ler Chave Original Windows (BIOS)", "Mostra na consola a tua Product Key original gravada na placa-mãe.", () => ReadBiosWindowsKey());
+            AddCardBtn(ug, "⚖️ Calcular Gargalo (CPU vs GPU vs RAM)", "Analisa o equilíbrio entre o teu CPU, Placa Gráfica e memória RAM.", () => CheckUptimeAndBottleneck());
+            AddCardBtn(ug, "🎙️ Testar Microfone (Ouvir a Minha Voz)", "Abre o painel de escuta direta do microfone para testar ruído e áudio.", () => RunCmd("control mmsys.cpl,,1", "Painel de Microfone aberto!"));
+            AddCardBtn(ug, "🔓 Limpar Bloqueios Ficheiro HOSTS", "Restaura o ficheiro HOSTS original do Windows.", () => ResetHostsFile());
+            AddCardBtn(ug, "⚡ Calibrar Cores e Gama do Monitor", "Abre o calibrador de gama e cores do ecrã (dccw.exe).", () => RunCmd("dccw.exe", "Calibrador aberto!"));
         }
 
         private void BuildPage_DiskSpaceHunter(Grid page)
         {
-            Grid g = new Grid();
-            g.RowDefinitions.Add(new RowDefinition { Height = new GridLength(50) });
-            g.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-            page.Children.Add(g);
-
+            Grid g = new Grid(); g.RowDefinitions.Add(new RowDefinition { Height = new GridLength(50) }); g.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) }); page.Children.Add(g);
             StackPanel topSp = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(5) }; Grid.SetRow(topSp, 0);
-            topSp.Children.Add(CreateSmallBtn("🔍 Procurar as 15 Maiores Pastas Ocultas (AppData / ProgramData)", () => ScanHeavyFolders()));
-            topSp.Children.Add(CreateSmallBtn("🎬 Procurar Ficheiros Gigantes (+200MB em Downloads/Vídeos)", () => ScanGiantFiles()));
+            topSp.Children.Add(CreateSmallBtn("🔍 Procurar 15 Maiores Pastas (AppData/ProgramData)", () => ScanHeavyFolders()));
+            topSp.Children.Add(CreateSmallBtn("🎬 Procurar Ficheiros Gigantes (+200MB)", () => ScanGiantFiles()));
             topSp.Children.Add(CreateSmallBtn("📂 Abrir Pasta Selecionada", () => OpenSelectedHeavyFolder()));
             g.Children.Add(topSp);
-
             lstBigFolders = new ListBox { Margin = new Thickness(5), Background = new SolidColorBrush(Color.FromRgb(15, 23, 42)), Foreground = Brushes.Gold, BorderBrush = new SolidColorBrush(Color.FromRgb(30, 41, 59)), FontFamily = new FontFamily("Consolas"), FontSize = 12 };
-            Grid.SetRow(lstBigFolders, 1);
-            lstBigFolders.Items.Add("💿 Clica num dos botões azuis acima para descobrir o que está a ocupar espaço no teu SSD!");
+            Grid.SetRow(lstBigFolders, 1); lstBigFolders.Items.Add("💿 Clica num dos botões azuis acima para descobrir onde está o espaço ocupado no SSD!");
             g.Children.Add(lstBigFolders);
         }
 
         private void BuildPage_CrosshairAndGamePing(Grid page)
         {
-            Grid g = new Grid();
-            g.RowDefinitions.Add(new RowDefinition { Height = new GridLength(135) });
-            g.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-            page.Children.Add(g);
-
+            Grid g = new Grid(); g.RowDefinitions.Add(new RowDefinition { Height = new GridLength(135) }); g.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) }); page.Children.Add(g);
             Border cCross = CreateCard("十 MIRA FLUTUANTE NO ECRÃ (CROSSHAIR OVERLAY NATIVO - ATALHO: CTRL+SHIFT+F2)", 0, 0);
             StackPanel spCross = (StackPanel)cCross.Child;
-            spCross.Children.Add(new TextBlock { Text = "Desenha uma mira transparente no centro exato do monitor (Ideal para Rust, CS2, Warzone, Valorant, Apex). Os tiros passam através dela!", FontSize = 11.5, Foreground = Brushes.Silver, Margin = new Thickness(0, 6, 0, 10) });
-
+            spCross.Children.Add(new TextBlock { Text = "Desenha uma mira transparente no centro exato do monitor. Os tiros passam através dela!", FontSize = 11.5, Foreground = Brushes.Silver, Margin = new Thickness(0, 6, 0, 10) });
             StackPanel spCrossBtns = new StackPanel { Orientation = Orientation.Horizontal };
             spCrossBtns.Children.Add(CreateSmallBtn("十 Ligar / Desligar Mira (F2)", () => ToggleCrosshairOverlay()));
-            spCrossBtns.Children.Add(CreateSmallBtn("🔄 Mudar Estilo (Cruz / Ponto / Anel)", () => { crosshairStyle = (crosshairStyle + 1) % 3; RedrawCrosshair(); }));
+            spCrossBtns.Children.Add(CreateSmallBtn("🔄 Estilo (Cruz/Ponto/Anel)", () => { crosshairStyle = (crosshairStyle + 1) % 3; RedrawCrosshair(); }));
             spCrossBtns.Children.Add(CreateSmallBtn("🟢 Verde", () => { crosshairColor = Brushes.Lime; RedrawCrosshair(); }));
             spCrossBtns.Children.Add(CreateSmallBtn("🔴 Vermelho", () => { crosshairColor = Brushes.Red; RedrawCrosshair(); }));
             spCrossBtns.Children.Add(CreateSmallBtn("🔵 Cyan", () => { crosshairColor = Brushes.Cyan; RedrawCrosshair(); }));
             spCrossBtns.Children.Add(CreateSmallBtn("🟡 Amarelo", () => { crosshairColor = Brushes.Yellow; RedrawCrosshair(); }));
-            spCross.Children.Add(spCrossBtns);
-            g.Children.Add(cCross);
+            spCross.Children.Add(spCrossBtns); g.Children.Add(cCross);
 
             Border cPing = CreateCard("🌍 RADAR DE LATÊNCIA (PING) PARA SERVIDORES DE JOGOS NA EUROPA", 1, 0);
             StackPanel spPing = (StackPanel)cPing.Child;
-            lblGamePingResult = new TextBlock { Text = "Clica abaixo para medir o teu Ping em tempo real para os principais datacenters de jogos na Europa:", FontSize = 12.5, FontWeight = FontWeights.Bold, Foreground = new SolidColorBrush(Color.FromRgb(0, 229, 255)), Margin = new Thickness(0, 8, 0, 10), TextWrapping = TextWrapping.Wrap };
+            lblGamePingResult = new TextBlock { Text = "Clica abaixo para medir o Ping em tempo real para os servidores de jogos na Europa:", FontSize = 12.5, FontWeight = FontWeights.Bold, Foreground = new SolidColorBrush(Color.FromRgb(0, 229, 255)), Margin = new Thickness(0, 8, 0, 10), TextWrapping = TextWrapping.Wrap };
             spPing.Children.Add(lblGamePingResult);
-
             StackPanel spPingBtns = new StackPanel { Orientation = Orientation.Horizontal };
             spPingBtns.Children.Add(CreateSmallBtn("🎯 Testar Servidores de Jogos Agora", () => RunGameServersPingRadar()));
             spPingBtns.Children.Add(CreateSmallBtn("🏆 Caçar DNS Mais Rápido", () => HuntBestDnsServer()));
-            spPing.Children.Add(spPingBtns);
-            g.Children.Add(cPing);
-        }
-
-        private void BuildPage_GamerAppStore(Grid page)
-        {
-            Border card = CreateCard("📦 APP STORE GAMER & STREAMER (SELECIONA AS APPS E INSTALA TUDO EM 1-CLIQUE!)", 0, 0);
-            StackPanel sp = (StackPanel)card.Child;
-            sp.Children.Add(new TextBlock { Text = "Marca as caixas abaixo e clica em Instalar Tudo para transferir silenciosamente via Microsoft Winget:", FontSize = 11.5, Foreground = Brushes.Silver, Margin = new Thickness(0, 4, 0, 10) });
-
-            UniformGrid ugApps = new UniformGrid { Columns = 4, Rows = 4, Height = 155 };
-            storeCheckBoxes.Clear();
-            string[,] apps = {
-                { "💬 Discord", "Discord.Discord" }, { "🎮 Steam", "Valve.Steam" }, { "🚀 Epic Games", "EpicGames.EpicGamesLauncher" }, { "⚔️ Battle.net", "Blizzard.BattleNet" },
-                { "🎵 Spotify", "Spotify.Spotify" }, { "🦁 Brave Browser", "Brave.Brave" }, { "🌐 Google Chrome", "Google.Chrome" }, { "🦊 Mozilla Firefox", "Mozilla.Firefox" },
-                { "🎥 OBS Studio", "OBSProject.OBSStudio" }, { "🔊 EarTrumpet", "File-New-Project.EarTrumpet" }, { "🌀 Fan Control", "Rem0o.FanControl" }, { "🌈 OpenRGB", "CalcProgrammer1.OpenRGB" },
-                { "📦 7-Zip", "7zip.7zip" }, { "🎬 VLC Player", "VideoLAN.VLC" }, { "📸 ShareX", "ShareX.ShareX" }, { "🛡️ Malwarebytes", "Malwarebytes.Malwarebytes" }
-            };
-            for (int i = 0; i < 16; i++)
-            {
-                CheckBox cb = new CheckBox { Content = apps[i, 0], Tag = apps[i, 1], Foreground = Brushes.White, FontSize = 12, FontWeight = FontWeights.SemiBold, Margin = new Thickness(4), Cursor = Cursors.Hand };
-                storeCheckBoxes.Add(cb); ugApps.Children.Add(cb);
-            }
-            sp.Children.Add(ugApps);
-
-            StackPanel spBtns = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 8, 0, 0) };
-            spBtns.Children.Add(CreateSmallBtn("🚀 Instalar Apps Marcadas!", () => InstallSelectedStoreApps()));
-            spBtns.Children.Add(CreateSmallBtn("☑️ Marcar Essenciais Gamer", () => { for (int i = 0; i < storeCheckBoxes.Count; i++) storeCheckBoxes[i].IsChecked = (i == 0 || i == 1 || i == 5 || i == 9 || i == 12); }));
-            spBtns.Children.Add(CreateSmallBtn("🧹 Desmarcar Tudo", () => { foreach (var c in storeCheckBoxes) c.IsChecked = false; }));
-            sp.Children.Add(spBtns);
-            page.Children.Add(card);
+            spPing.Children.Add(spPingBtns); g.Children.Add(cPing);
         }
 
         private void BuildPage3_NativeTests(Grid page)
         {
-            Grid g = new Grid();
-            g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            g.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-            g.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-            page.Children.Add(g);
+            Grid g = new Grid(); g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) }); g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) }); g.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) }); g.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) }); page.Children.Add(g);
 
             Border cardMouse = CreateCard("🖱️ TESTE DE POLLING RATE DO RATO (MEXE O RATO AQUI DENTRO!)", 0, 0);
             StackPanel spMouse = (StackPanel)cardMouse.Child;
             lblMouseHz = new TextBlock { Text = "Atual: 0 Hz", FontSize = 20, FontWeight = FontWeights.Bold, Foreground = new SolidColorBrush(Color.FromRgb(0, 229, 255)), Margin = new Thickness(0, 6, 0, 2) };
             lblMouseMaxHz = new TextBlock { Text = "Pico Máximo: 0 Hz (Faz círculos rápidos aqui!)", FontSize = 11.5, Foreground = Brushes.Silver };
             spMouse.Children.Add(lblMouseHz); spMouse.Children.Add(lblMouseMaxHz);
-            cardMouse.MouseMove += (s, e) =>
-            {
-                if (!mouseSw.IsRunning) { mouseSw.Start(); mouseSamples = 0; }
-                mouseSamples++;
-                if (mouseSw.ElapsedMilliseconds >= 250)
-                {
-                    int hz = (int)(mouseSamples * (1000.0 / mouseSw.ElapsedMilliseconds));
-                    if (hz > maxMouseHz) maxMouseHz = hz;
-                    lblMouseHz.Text = $"Velocidade Atual: {hz} Hz";
-                    lblMouseMaxHz.Text = $"🏆 Pico Máximo: {maxMouseHz} Hz (Clique Direito repõe)";
-                    mouseSamples = 0; mouseSw.Restart();
-                }
-            };
-            cardMouse.MouseRightButtonDown += (s, e) => { maxMouseHz = 0; lblMouseHz.Text = "Atual: 0 Hz"; };
-            g.Children.Add(cardMouse);
+            cardMouse.MouseMove += (s, e) => { if (!mouseSw.IsRunning) { mouseSw.Start(); mouseSamples = 0; } mouseSamples++; if (mouseSw.ElapsedMilliseconds >= 250) { int hz = (int)(mouseSamples * (1000.0 / mouseSw.ElapsedMilliseconds)); if (hz > maxMouseHz) maxMouseHz = hz; lblMouseHz.Text = $"Velocidade Atual: {hz} Hz"; lblMouseMaxHz.Text = $"🏆 Pico Máximo: {maxMouseHz} Hz (Clique Direito repõe)"; mouseSamples = 0; mouseSw.Restart(); } };
+            cardMouse.MouseRightButtonDown += (s, e) => { maxMouseHz = 0; lblMouseHz.Text = "Atual: 0 Hz"; }; g.Children.Add(cardMouse);
 
             Border cardMon = CreateCard("🖥️ TESTE DE MONITOR NATIVO (UFO MOTION & DEAD PIXELS)", 0, 1);
             StackPanel spMon = (StackPanel)cardMon.Child;
             ufoCanvas = new Canvas { Height = 38, Background = new SolidColorBrush(Color.FromRgb(10, 14, 23)), Margin = new Thickness(0, 4, 0, 6), ClipToBounds = true };
             ufoRect1 = new Rectangle { Width = 28, Height = 14, Fill = new SolidColorBrush(Color.FromRgb(0, 229, 255)), RadiusX = 4, RadiusY = 4 };
             ufoRect2 = new Rectangle { Width = 28, Height = 14, Fill = new SolidColorBrush(Color.FromRgb(250, 204, 21)), RadiusX = 4, RadiusY = 4 };
-            Canvas.SetTop(ufoRect1, 4); Canvas.SetTop(ufoRect2, 20); ufoCanvas.Children.Add(ufoRect1); ufoCanvas.Children.Add(ufoRect2);
-            spMon.Children.Add(ufoCanvas);
+            Canvas.SetTop(ufoRect1, 4); Canvas.SetTop(ufoRect2, 20); ufoCanvas.Children.Add(ufoRect1); ufoCanvas.Children.Add(ufoRect2); spMon.Children.Add(ufoCanvas);
             StackPanel spMonBtns = new StackPanel { Orientation = Orientation.Horizontal };
             spMonBtns.Children.Add(CreateSmallBtn("🛸 Ligar/Parar Ghosting", () => ToggleUfoTest()));
             spMonBtns.Children.Add(CreateSmallBtn("🎨 Ecrã Inteiro Dead Pixels", () => OpenNativeDeadPixelTester()));
@@ -648,194 +481,296 @@ namespace PCOptimizer
 
         private void BuildPage_ProcessLasso(Grid page)
         {
-            Grid g = new Grid();
-            g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(360) });
-            g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            page.Children.Add(g);
-
+            Grid g = new Grid(); g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(340) }); g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) }); page.Children.Add(g);
             StackPanel col1 = new StackPanel { Margin = new Thickness(5) }; Grid.SetColumn(col1, 0);
             col1.Children.Add(new TextBlock { Text = "🎯 Jogos e Programas Abertos Agora:", Foreground = Brushes.Cyan, FontWeight = FontWeights.Bold, Margin = new Thickness(0, 0, 0, 6) });
-            lstRunningGames = new ListBox { Height = 210, Background = new SolidColorBrush(Color.FromRgb(15, 23, 42)), Foreground = Brushes.White, BorderBrush = new SolidColorBrush(Color.FromRgb(30, 41, 59)), FontFamily = new FontFamily("Consolas"), FontSize = 11.5 };
+            lstRunningGames = new ListBox { Height = 220, Background = new SolidColorBrush(Color.FromRgb(15, 23, 42)), Foreground = Brushes.White, BorderBrush = new SolidColorBrush(Color.FromRgb(30, 41, 59)), FontFamily = new FontFamily("Consolas"), FontSize = 11.5 };
             col1.Children.Add(lstRunningGames);
-            Button btnRef = CreateSmallBtn("🔄 Atualizar Lista de Processos", () => RefreshRunningApps()); btnRef.Margin = new Thickness(0, 6, 0, 0);
-            col1.Children.Add(btnRef); g.Children.Add(col1);
+            Button btnRef = CreateSmallBtn("🔄 Atualizar Lista de Processos", () => RefreshRunningApps()); btnRef.Margin = new Thickness(0, 6, 0, 0); col1.Children.Add(btnRef); g.Children.Add(col1);
 
-            UniformGrid ug = new UniformGrid { Columns = 2, Rows = 4, Margin = new Thickness(10, 0, 0, 0) }; Grid.SetColumn(ug, 1);
-            AddCardBtn(ug, "🚀 Dedicar Núcleos Puros (Tirar Core 0)", () => ApplyCpuZeroAvoidance(), true);
-            AddCardBtn(ug, "⚡ Forçar Prioridade ALTA no Processo", () => SetSelectedProcessPriority(ProcessPriorityClass.High));
-            AddCardBtn(ug, "🎥 Separar Núcleos: Jogo vs OBS Studio", () => SplitCoresGameAndObs());
-            AddCardBtn(ug, "🔄 Repor Todos os Núcleos no Processo", () => ResetSelectedProcessAffinity());
-            AddCardBtn(ug, "🔪 Suspender Explorer.exe (Ultra-FPS)", () => RunCmd("taskkill /f /im explorer.exe", "Explorer suspenso!"));
-            AddCardBtn(ug, "✨ Religar Explorer.exe (Normal)", () => { Process.Start("explorer.exe"); Log("✔ Explorer religado!"); });
-            AddCardBtn(ug, "🚀 Listar Programas no Arranque", () => ListStartupRegistryApps());
-            AddCardBtn(ug, "📊 Abrir Monitor de Recursos (Resmon)", () => RunCmd("start resmon.exe", "Resmon aberto!"));
-            g.Children.Add(ug); RefreshRunningApps();
+            ScrollViewer sv = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto }; Grid.SetColumn(sv, 1);
+            UniformGrid ug = new UniformGrid { Columns = 2, Rows = 4, Margin = new Thickness(6, 0, 0, 0) }; sv.Content = ug;
+            AddCardBtn(ug, "🚀 Isolar Core 0 (Process Lasso)", "Tira o jogo do Núcleo 0 do Windows para eliminar micro-stuttering.", () => ApplyCpuZeroAvoidance(), true);
+            AddCardBtn(ug, "⚡ Forçar Prioridade ALTA", "Aplica prioridade Alta imediata de CPU ao processo selecionado.", () => SetSelectedProcessPriority(ProcessPriorityClass.High));
+            AddCardBtn(ug, "🎥 Separar Núcleos Jogo vs OBS", "Balanceia os threads do processador entre o Jogo e o OBS Studio.", () => SplitCoresGameAndObs());
+            AddCardBtn(ug, "🔄 Repor Todos os Núcleos", "Devolve todos os threads padrão do CPU ao processo selecionado.", () => ResetSelectedProcessAffinity());
+            AddCardBtn(ug, "🔪 Suspender Explorer (Ultra-FPS)", "Fecha a barra de tarefas enquanto jogas (+400MB RAM livres).", () => RunCmd("taskkill /f /im explorer.exe", "Explorer suspenso!"));
+            AddCardBtn(ug, "✨ Religar Explorer (Normal)", "Volta a abrir a barra de tarefas e ambiente de trabalho.", () => { Process.Start("explorer.exe"); Log("✔ Explorer religado!"); });
+            AddCardBtn(ug, "🚀 Listar Apps de Arranque", "Mostra na consola todos os programas que iniciam com o Windows.", () => ListStartupRegistryApps());
+            AddCardBtn(ug, "📊 Abrir Monitor de Recursos", "Abre o analisador oficial de núcleos de CPU (resmon).", () => RunCmd("start resmon.exe", "Resmon aberto!"));
+            g.Children.Add(sv); RefreshRunningApps();
         }
 
         private void BuildPage4_RevoUninstaller(Grid page)
         {
-            Grid g = new Grid();
-            g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(310) });
-            g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(290) });
-            g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            page.Children.Add(g);
-
+            Grid g = new Grid(); g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(310) }); g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(310) }); g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) }); page.Children.Add(g);
             StackPanel col1 = new StackPanel { Margin = new Thickness(5) }; Grid.SetColumn(col1, 0);
             col1.Children.Add(new TextBlock { Text = "1. Escolhe ou pesquisa a App:", Foreground = Brushes.Cyan, FontWeight = FontWeights.Bold, Margin = new Thickness(0, 0, 0, 5) });
             DockPanel dpSearch = new DockPanel { Margin = new Thickness(0, 0, 0, 6) };
             Button btnList = CreateSmallBtn("🔄 Listar Apps", () => LoadInstalledProgramsList()); DockPanel.SetDock(btnList, Dock.Right);
             txtSearchProg = new TextBox { Background = new SolidColorBrush(Color.FromRgb(30, 41, 59)), Foreground = Brushes.White, BorderThickness = new Thickness(0), Padding = new Thickness(6), FontSize = 12, Margin = new Thickness(0, 0, 6, 0) };
             dpSearch.Children.Add(btnList); dpSearch.Children.Add(txtSearchProg); col1.Children.Add(dpSearch);
-            lstPrograms = new ListBox { Height = 210, Background = new SolidColorBrush(Color.FromRgb(15, 23, 42)), Foreground = Brushes.White, BorderBrush = new SolidColorBrush(Color.FromRgb(30, 41, 59)) };
+            lstPrograms = new ListBox { Height = 220, Background = new SolidColorBrush(Color.FromRgb(15, 23, 42)), Foreground = Brushes.White, BorderBrush = new SolidColorBrush(Color.FromRgb(30, 41, 59)) };
             lstPrograms.SelectionChanged += (s, e) => { if (lstPrograms.SelectedItem != null) txtSearchProg.Text = lstPrograms.SelectedItem.ToString(); };
             col1.Children.Add(lstPrograms); g.Children.Add(col1);
 
-            StackPanel col2 = new StackPanel { Margin = new Thickness(5, 20, 5, 5) }; Grid.SetColumn(col2, 1);
-            AddCardBtn(col2, "🗑️ 1. Desinstalar + Caçar Sobras", () => UninstallAndScanLeftovers(), true);
-            AddCardBtn(col2, "🔍 Só Procurar Sobras (Raio-X)", () => ScanForLeftoversOnly());
-            AddCardBtn(col2, "🔥 2. Apagar Todas as Sobras", () => DeleteSelectedLeftovers());
-            AddCardBtn(col2, "📦 Instalar Revo Uninstaller", () => RunCmdVisible("winget install -e --id RevoUninstaller.RevoUninstaller --accept-package-agreements --accept-source-agreements", "A instalar Revo..."));
-            g.Children.Add(col2);
+            ScrollViewer svMid = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto }; Grid.SetColumn(svMid, 1);
+            StackPanel col2 = new StackPanel { Margin = new Thickness(2) }; svMid.Content = col2;
+            AddCardBtn(col2, "🗑️ 1. Desinstalar + Caçar Sobras", "Desinstala a app via Winget e varre pastas ocultas e Registo deixados para trás!", () => UninstallAndScanLeftovers(), true);
+            AddCardBtn(col2, "🔍 Só Procurar Sobras (Raio-X)", "Procura pastas esquecidas em AppData, ProgramData e Registo.", () => ScanForLeftoversOnly());
+            AddCardBtn(col2, "🔥 2. Apagar Todas as Sobras", "Elimina de raiz todas as pastas e chaves de Registo encontradas à direita!", () => DeleteSelectedLeftovers());
+            g.Children.Add(svMid);
 
             StackPanel col3 = new StackPanel { Margin = new Thickness(5) }; Grid.SetColumn(col3, 2);
             col3.Children.Add(new TextBlock { Text = "Sobras Encontradas (AppData e Registo):", Foreground = Brushes.Orange, FontWeight = FontWeights.Bold, Margin = new Thickness(0, 0, 0, 5) });
-            lstLeftovers = new ListBox { Height = 240, Background = new SolidColorBrush(Color.FromRgb(15, 23, 42)), Foreground = new SolidColorBrush(Color.FromRgb(248, 113, 113)), BorderBrush = new SolidColorBrush(Color.FromRgb(30, 41, 59)) };
+            lstLeftovers = new ListBox { Height = 250, Background = new SolidColorBrush(Color.FromRgb(15, 23, 42)), Foreground = new SolidColorBrush(Color.FromRgb(248, 113, 113)), BorderBrush = new SolidColorBrush(Color.FromRgb(30, 41, 59)) };
             col3.Children.Add(lstLeftovers); g.Children.Add(col3);
         }
 
         private void BuildPage5_FansAndRgb(Grid page)
         {
             UniformGrid ug = CreateButtonGrid(page);
-            AddCardBtn(ug, "🌡️ Ler Sensores Térmicos Completos", () => ReadTempsAndFans(), true);
-            AddCardBtn(ug, "❄️ Refrigeração Ativa 100% no CPU", () => EnableActiveCoolingPolicy());
-            AddCardBtn(ug, "🔪 Matar Apps RGB Pesadas (+RAM)", () => KillHeavyRgbBloatware());
-            AddCardBtn(ug, "💥 Ver Causa dos Últimos Crashes", () => ReadLastSystemCrashes());
-            AddCardBtn(ug, "🌀 Instalar 'Fan Control' (Universal)", () => RunCmdVisible("winget install -e --id Rem0o.FanControl --accept-package-agreements --accept-source-agreements", "A instalar Fan Control..."));
-            AddCardBtn(ug, "🌈 Instalar 'OpenRGB' (Luzes Leve)", () => RunCmdVisible("winget install -e --id CalcProgrammer1.OpenRGB --accept-package-agreements --accept-source-agreements", "A instalar OpenRGB..."));
-            AddCardBtn(ug, "🚀 Instalar 'MSI Afterburner'", () => RunCmdVisible("winget install -e --id Guru3D.Afterburner --accept-package-agreements --accept-source-agreements", "A instalar Afterburner..."));
-            AddCardBtn(ug, "📊 Instalar 'HWiNFO64' (Sensores)", () => RunCmdVisible("winget install -e --id REALiX.HWiNFO --accept-package-agreements --accept-source-agreements", "A instalar HWiNFO64..."));
-            AddCardBtn(ug, "🛑 Parar Serviços ASUS Armoury", () => StopBrandBloatServices("ASUS"));
-            AddCardBtn(ug, "🛑 Parar Serviços Razer & Corsair", () => StopBrandBloatServices("RAZER_CORSAIR"));
-            AddCardBtn(ug, "💡 Desativar Dynamic Lighting Win11", () => DisableWindowsDynamicLighting());
-            AddCardBtn(ug, "💾 Ver Saúde e Anéis de SSDs", () => CheckDiskHealth());
+            AddCardBtn(ug, "🌡️ Ler Sensores Térmicos Completos", "Lê Graus (°C), Watts, MHz e RPMs do teu CPU, Placa Gráfica e Ventoinhas da Board.", () => ReadTempsAndFans(), true);
+            AddCardBtn(ug, "❄️ Refrigeração Ativa 100% no CPU", "Obriga o Windows a acelerar as ventoinhas antes de reduzir os MHz do processador.", () => EnableActiveCoolingPolicy());
+            AddCardBtn(ug, "🔪 Matar Apps RGB Pesadas (+RAM)", "Fecha iCUE, Armoury Crate, Synapse e NZXT mantendo a cor atual das tuas luzes!", () => KillHeavyRgbBloatware());
+            AddCardBtn(ug, "💥 Ver Causa dos Últimos Crashes", "Analisa o Visualizador de Eventos e mostra os últimos erros críticos de jogos.", () => ReadLastSystemCrashes());
+            AddCardBtn(ug, "🌀 Instalar 'Fan Control' (Universal)", "Instala o melhor gestor gratuito de curvas de ventoinhas de CPU e GPU.", () => RunCmdVisible("winget install -e --id Rem0o.FanControl --accept-package-agreements --accept-source-agreements", "A instalar Fan Control..."));
+            AddCardBtn(ug, "🌈 Instalar 'OpenRGB' (Luzes Leve)", "Controla todas as luzes RGB (Board, RAM, GPU, Rato) num único programa leve.", () => RunCmdVisible("winget install -e --id CalcProgrammer1.OpenRGB --accept-package-agreements --accept-source-agreements", "A instalar OpenRGB..."));
+            AddCardBtn(ug, "🚀 Instalar 'MSI Afterburner'", "Controla a curva de ventoinhas da Placa Gráfica, limites térmicos e overclock.", () => RunCmdVisible("winget install -e --id Guru3D.Afterburner --accept-package-agreements --accept-source-agreements", "A instalar Afterburner..."));
+            AddCardBtn(ug, "📊 Instalar 'HWiNFO64' (Sensores)", "Mostra todos os sensores térmicos, voltagens e RPMs da placa-mãe e bomba AIO.", () => RunCmdVisible("winget install -e --id REALiX.HWiNFO --accept-package-agreements --accept-source-agreements", "A instalar HWiNFO64..."));
+            AddCardBtn(ug, "🛑 Parar Serviços ASUS Armoury", "Desliga os serviços em 2.º plano da ASUS que consomem processador sem necessidade.", () => StopBrandBloatServices("ASUS"));
+            AddCardBtn(ug, "🛑 Parar Serviços Razer & Corsair", "Desliga os serviços pesados da Razer e Corsair iCUE em segundo plano.", () => StopBrandBloatServices("RAZER_CORSAIR"));
+            AddCardBtn(ug, "💡 Desativar Dynamic Lighting Win11", "Impede conflitos de luzes do Windows 11 com o teu rato e teclado.", () => DisableWindowsDynamicLighting());
+            AddCardBtn(ug, "💾 Ver Saúde e Espaço dos SSDs", "Lista na consola todos os discos prontos, espaço livre e percentagem de uso.", () => CheckDiskHealth());
         }
 
         private void BuildPage6_Streamer(Grid page)
         {
             UniformGrid ug = CreateButtonGrid(page);
-            AddCardBtn(ug, "🚀 MODO LIVE (1-Clique Pré-Stream)", () => ActivateLiveMode(), true);
-            AddCardBtn(ug, "🛡️ Blindar OBS Studio (Auto-Admin)", () => OptimizeObsStudio());
-            AddCardBtn(ug, "⚡ Prioridade Alta OBS & Discord", () => BoostObsAndDiscordProcess());
-            AddCardBtn(ug, "🎙️ Fix Áudio (Tirar Redução 80%)", () => FixStreamerAudio());
-            AddCardBtn(ug, "📡 Estabilizar Upload da Stream", () => OptimizeUploadForStream());
-            AddCardBtn(ug, "⏸️ Pausar Sincronizações 2.º Plano", () => PauseBackgroundSyncs());
-            AddCardBtn(ug, "🎧 Abrir Painel Som (48kHz Studio)", () => RunCmd("control mmsys.cpl sounds", "Painel de Som aberto!"));
-            AddCardBtn(ug, "🔕 Modo Anti-Leak (Sem Pop-ups)", () => DisableNotificationsForStream());
-            AddCardBtn(ug, "🔄 Atualizar TUDO (Winget Auto)", () => RunCmdVisible("winget upgrade --all --include-unknown --accept-package-agreements --accept-source-agreements", "A atualizar todos os programas..."));
-            AddCardBtn(ug, "📦 Instalar/Atualizar OBS Studio", () => RunCmdVisible("winget install -e --id OBSProject.OBSStudio --accept-package-agreements --accept-source-agreements", "A instalar OBS..."));
-            AddCardBtn(ug, "🔊 Instalar EarTrumpet (Volumes)", () => RunCmdVisible("winget install -e --id File-New-Project.EarTrumpet --accept-package-agreements --accept-source-agreements", "A instalar EarTrumpet..."));
-            AddCardBtn(ug, "🎛️ Instalar VoiceMeeter Banana", () => RunCmdVisible("winget install -e --id VB-Audio.Voicemeeter.Banana --accept-package-agreements --accept-source-agreements", "A instalar VoiceMeeter..."));
+            AddCardBtn(ug, "🚀 MODO LIVE (1-Clique Pré-Stream)", "Pausa OneDrive/Updates, fecha RGB pesado, limpa RAM, liga Auto-Guard e blinda OBS!", () => ActivateLiveMode(), true);
+            AddCardBtn(ug, "🛡️ Blindar OBS Studio (Auto-Admin)", "Configura o OBS para abrir sempre como Admin e reservar GPU (Zero Overload).", () => OptimizeObsStudio());
+            AddCardBtn(ug, "⚡ Prioridade Alta OBS & Discord", "Dá prioridade máxima imediata ao OBS Studio e Discord no processador.", () => BoostObsAndDiscordProcess());
+            AddCardBtn(ug, "🎙️ Fix Áudio (Tirar Redução 80%)", "Impede o Windows de baixar sozinho o volume do jogo quando falam no Discord.", () => FixStreamerAudio());
+            AddCardBtn(ug, "📡 Estabilizar Upload da Stream", "Remove limite de rede multimédia para zero perda de frames na Twitch/YouTube.", () => OptimizeUploadForStream());
+            AddCardBtn(ug, "⏸️ Pausar Sincronizações 2.º Plano", "Para OneDrive, Windows Update e Indexação para não roubarem Upload na Live.", () => PauseBackgroundSyncs());
+            AddCardBtn(ug, "🎧 Abrir Painel Som (48kHz Studio)", "Abre dispositivos de som para colocares Microfone e Auscultadores em 48000 Hz.", () => RunCmd("control mmsys.cpl sounds", "Painel de Som aberto!"));
+            AddCardBtn(ug, "🔕 Modo Anti-Leak (Sem Pop-ups)", "Bloqueia notificações do Windows para nenhuma mensagem aparecer na transmissão.", () => DisableNotificationsForStream());
+            AddCardBtn(ug, "🔄 Atualizar TUDO (Winget Auto)", "Procura e instala atualizações para todos os programas e runtimes do teu PC!", () => RunCmdVisible("winget upgrade --all --include-unknown --accept-package-agreements --accept-source-agreements", "A atualizar todos os programas..."));
+            AddCardBtn(ug, "📦 Instalar/Atualizar OBS Studio", "Instala ou atualiza o OBS Studio oficial automaticamente via Winget.", () => RunCmdVisible("winget install -e --id OBSProject.OBSStudio --accept-package-agreements --accept-source-agreements", "A instalar OBS..."));
+            AddCardBtn(ug, "🔊 Instalar EarTrumpet (Volumes)", "Controlo individual de volume de cada jogo e app na barra de tarefas.", () => RunCmdVisible("winget install -e --id File-New-Project.EarTrumpet --accept-package-agreements --accept-source-agreements", "A instalar EarTrumpet..."));
+            AddCardBtn(ug, "🎛️ Instalar VoiceMeeter Banana", "Mesa de mistura virtual para separar o áudio do Discord do VOD da Twitch.", () => RunCmdVisible("winget install -e --id VB-Audio.Voicemeeter.Banana --accept-package-agreements --accept-source-agreements", "A instalar VoiceMeeter..."));
         }
 
         private void BuildPage8_UndoHistory(Grid page)
         {
-            Grid g = new Grid();
-            g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(330) });
-            g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            page.Children.Add(g);
-
+            Grid g = new Grid(); g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(330) }); g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) }); page.Children.Add(g);
             StackPanel col1 = new StackPanel { Margin = new Thickness(5) }; Grid.SetColumn(col1, 0);
             col1.Children.Add(new TextBlock { Text = "📜 O Teu Histórico (Data, Hora e Ação):", Foreground = Brushes.Gold, FontWeight = FontWeights.Bold, Margin = new Thickness(0, 0, 0, 6) });
-            lstHistory = new ListBox { Height = 210, Background = new SolidColorBrush(Color.FromRgb(15, 23, 42)), Foreground = new SolidColorBrush(Color.FromRgb(52, 211, 153)), BorderBrush = new SolidColorBrush(Color.FromRgb(30, 41, 59)), FontFamily = new FontFamily("Consolas"), FontSize = 11 };
+            lstHistory = new ListBox { Height = 220, Background = new SolidColorBrush(Color.FromRgb(15, 23, 42)), Foreground = new SolidColorBrush(Color.FromRgb(52, 211, 153)), BorderBrush = new SolidColorBrush(Color.FromRgb(30, 41, 59)), FontFamily = new FontFamily("Consolas"), FontSize = 11 };
             col1.Children.Add(lstHistory);
             Button btnClearH = CreateSmallBtn("🧹 Limpar Histórico", () => { try { if (File.Exists(historyFilePath)) File.Delete(historyFilePath); lstHistory.Items.Clear(); } catch { } });
             btnClearH.Margin = new Thickness(0, 6, 0, 0); col1.Children.Add(btnClearH); g.Children.Add(col1);
 
-            UniformGrid ug = new UniformGrid { Columns = 2, Rows = 4, Margin = new Thickness(10, 0, 0, 0) }; Grid.SetColumn(ug, 1);
-            AddCardBtn(ug, "🚨 PÂNICO: Reverter TUDO para Original!", () => UndoEverythingPanicButton(), true);
-            AddCardBtn(ug, "🛡️ Criar Ponto Restauro + Backup", () => CreateFullBackup());
-            AddCardBtn(ug, "⏪ Reverter Rato e Teclado", () => UndoPeripherals());
-            AddCardBtn(ug, "⏪ Reverter Jogos, VBS e Relógio", () => UndoGamingAndTimers());
-            AddCardBtn(ug, "⏪ Reverter 2.º Plano, IA e Serviços", () => UndoBackgroundAndServices());
-            AddCardBtn(ug, "⏪ Reverter Rede, Ping e DNS", () => UndoNetworkSettings());
-            AddCardBtn(ug, "⏪ Reverter Áudio e Notificações", () => UndoAudioAndVisuals());
-            AddCardBtn(ug, "🕰️ Abrir Restauro do Sistema Windows", () => RunCmd("rstrui.exe", "Restauro aberto!"));
-            g.Children.Add(ug);
+            ScrollViewer sv = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto }; Grid.SetColumn(sv, 1);
+            UniformGrid ug = new UniformGrid { Columns = 2, Rows = 4, Margin = new Thickness(6, 0, 0, 0) }; sv.Content = ug;
+            AddCardBtn(ug, "🚨 PÂNICO: Reverter TUDO!", "Restaura Rato, Jogos, Rede, 2.º Plano e Visual para o padrão original da Microsoft!", () => UndoEverythingPanicButton(), true);
+            AddCardBtn(ug, "🛡️ Criar Ponto Restauro + Backup", "Cria um Ponto de Restauro no Windows e guarda cópia do Registo em C:\\PCOptimizer_Backups.", () => CreateFullBackup());
+            AddCardBtn(ug, "⏪ Reverter Rato e Teclado", "Devolve a velocidade e aceleração originais de fábrica do rato e teclado.", () => UndoPeripherals());
+            AddCardBtn(ug, "⏪ Reverter Jogos, VBS e Relógio", "Repõe GameDVR, VBS, Win32PrioritySeparation=2 e o relógio padrão.", () => UndoGamingAndTimers());
+            AddCardBtn(ug, "⏪ Reverter 2.º Plano e Serviços", "Reativa apps em 2.º plano, Copilot, Hibernação e agrupamento SVCHOST padrão.", () => UndoBackgroundAndServices());
+            AddCardBtn(ug, "⏪ Reverter Rede, Ping e DNS", "Restaura o DNS automático da operadora e o Nagle's Algorithm.", () => UndoNetworkSettings());
+            AddCardBtn(ug, "⏪ Reverter Áudio e Notificações", "Devolve os pop-ups de notificações, transparências e redução do Discord.", () => UndoAudioAndVisuals());
+            AddCardBtn(ug, "🕰️ Abrir Restauro do Sistema", "Abre a Máquina do Tempo oficial do Windows (rstrui.exe) para voltar atrás.", () => RunCmd("rstrui.exe", "Restauro aberto!"));
+            g.Children.Add(sv);
         }
 
-        // --- SENSORES TÉRMICOS AO VIVO (LIBREHARDWAREMONITOR) ---
-        private void InitLiveSensorsAsync()
+        private void StartLiveSensorLoop()
+        {
+            _sensorTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1.5) };
+            _sensorTimer.Tick += (s, e) =>
+            {
+                if (isReadingSensors) return;
+                isReadingSensors = true;
+
+                Task.Run(() =>
+                {
+                    try
+                    {
+                        var snap = _hwMonitor.ReadSensors();
+                        var disks = HardwareMonitorService.GetDisksInfo();
+                        var cDrive = disks.FirstOrDefault(d => d.DriveLetter.StartsWith("C")) ?? disks.FirstOrDefault();
+                        int procs = Process.GetProcesses().Length;
+                        float cpuLoad = snap.CpuLoad;
+                        float ramFree = snap.RamAvailableMb > 0 ? snap.RamAvailableMb : 16000;
+
+                        Dispatcher.Invoke(() =>
+                        {
+                            string cTempStr = snap.CpuTemp > 0 ? $"{snap.CpuTemp:0}°C" : $"{cpuLoad:0}%";
+                            string gTempStr = snap.GpuTemp > 0 ? $"{snap.GpuTemp:0}°C ({snap.GpuPowerWatts:0}W)" : "Ativa";
+                            lblLiveStats.Text = $"🔥 CPU: {cpuLoad:0.0}% ({cTempStr}) | 🎮 GPU: {gTempStr} | 🧠 RAM Livre: {ramFree:0}MB";
+
+                            if (txtCpuVal != null) txtCpuVal.Text = $"🔥 CPU: {cpuLoad:0.0}%  |  Temp: {(snap.CpuTemp > 0 ? snap.CpuTemp.ToString("0") + " °C" : "Ativo")}  |  Processos: {procs}";
+                            if (txtGpuTempVal != null) txtGpuTempVal.Text = $"🎮 {snap.GpuName}: {snap.GpuTemp:0} °C  |  {snap.GpuPowerWatts:0} W  |  Fan: {snap.GpuFanPercent:0}%  |  {snap.GpuCoreClock:0} MHz";
+
+                            double ramPct = 30;
+                            if (txtRamVal != null && totalRamMb > 0)
+                            {
+                                ramPct = ((totalRamMb - ramFree) / totalRamMb) * 100.0;
+                                txtRamVal.Text = $"🧠 RAM Livre: {ramFree:0} MB (de {totalRamMb} MB - {ramPct:0}% em uso)";
+                            }
+
+                            if (txtDiskVal != null && cDrive != null)
+                                txtDiskVal.Text = $"💾 Disco {cDrive.DriveLetter}: {cDrive.FreeGB:0} GB Livres (de {cDrive.TotalGB:0} GB - {cDrive.UsedPercent:0}% cheio)";
+
+                            UpdateLiveGraph(cpuLoad, ramPct);
+
+                            if (overlayWin != null && overlayWin.IsVisible && overlayText != null)
+                                overlayText.Text = $"⚡ CPU: {cpuLoad:0}% ({cTempStr}) | GPU: {gTempStr}\n🧠 RAM: {ramFree:0}MB | Timer: {(chkTimer.IsChecked == true ? "0.5ms" : "Std")}";
+
+                            if (chkGuard.IsChecked == true && ramFree < 2500)
+                            {
+                                FlushMemorySilent();
+                                Log("🛡️ [AUTO-GUARD] Limpeza automática de RAM realizada!");
+                            }
+                        });
+                    }
+                    catch { }
+                    finally { isReadingSensors = false; }
+                });
+            };
+            _sensorTimer.Start();
+        }
+
+        private void CheckForGitHubReleasesUpdate(bool isManual)
+        {
+            if (isManual) Log("🔄 A procurar nova versão nas Releases do GitHub (Trin018/PC-Optimizer)...");
+            Task.Run(() =>
+            {
+                try
+                {
+                    ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
+                    using (WebClient wc = new WebClient())
+                    {
+                        wc.Headers.Add("User-Agent", "PCOptimizer-App");
+                        string json = wc.DownloadString(githubRepoApi);
+
+                        Match tagMatch = Regex.Match(json, "\"tag_name\"\\s*:\\s*\"([^\"]+)\"");
+                        Match urlMatch = Regex.Match(json, "\"browser_download_url\"\\s*:\\s*\"([^\"]+PC_Optimizer\\.exe)\"");
+
+                        if (tagMatch.Success && urlMatch.Success)
+                        {
+                            string latestTag = tagMatch.Groups[1].Value.TrimStart('v');
+                            string downloadUrl = urlMatch.Groups[1].Value;
+
+                            if (isManual)
+                            {
+                                Dispatcher.Invoke(() =>
+                                {
+                                    MessageBoxResult r = MessageBox.Show(
+                                        $"🚀 Última Release encontrada no teu GitHub: v{latestTag}\n(A tua versão atual: v{currentVersion})\n\nQueres transferir o último PC_Optimizer.exe diretamente da nuvem e reiniciar agora?",
+                                        "GitHub Cloud Auto-Updater",
+                                        MessageBoxButton.YesNo,
+                                        MessageBoxImage.Information);
+
+                                    if (r == MessageBoxResult.Yes) DownloadAndReplaceExe(downloadUrl, latestTag);
+                                });
+                            }
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    if (isManual) Dispatcher.Invoke(() => Log($"ℹ️ Verificação concluída ({ex.Message})."));
+                }
+            });
+        }
+
+        private void DownloadAndReplaceExe(string downloadUrl, string newTag)
         {
             try
             {
-                var disks = HardwareMonitorService.GetDisksInfo();
-                var cDrive = disks.FirstOrDefault(d => d.DriveLetter.StartsWith("C")) ?? disks.FirstOrDefault();
-                if (cDrive != null)
-                {
-                    Dispatcher.Invoke(() =>
-                    {
-                        if (txtDiskVal != null) txtDiskVal.Text = $"💾 Disco {cDrive.DriveLetter}: {cDrive.FreeGB:0} GB Livres (de {cDrive.TotalGB:0} GB - {cDrive.UsedPercent:0}% cheio)";
-                    });
-                }
-            }
-            catch { }
+                Log($"⏳ A transferir novo PC_Optimizer.exe (v{newTag}) do GitHub...");
+                string currentExe = Process.GetCurrentProcess().MainModule.FileName;
+                string newExe = currentExe + ".new";
+                string batUpdater = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "update_pcopt.bat");
 
-            try
+                using (WebClient wc = new WebClient()) wc.DownloadFile(downloadUrl, newExe);
+
+                string batContent = $"@echo off\r\ntimeout /t 2 /nobreak >nul\r\nmove /y \"{newExe}\" \"{currentExe}\"\r\nstart \"\" \"{currentExe}\"\r\ndel \"%~f0\"";
+                File.WriteAllText(batUpdater, batContent);
+                Process.Start(new ProcessStartInfo(batUpdater) { CreateNoWindow = true, UseShellExecute = false });
+                Environment.Exit(0);
+            }
+            catch (Exception ex) { Log("❌ Erro ao atualizar .exe: " + ex.Message); }
+        }
+
+        private void LoadInstalledProgramsList()
+        {
+            lstPrograms.Items.Clear();
+            List<string> progs = new List<string>();
+            foreach (string path in new[] { @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall", @"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall" })
             {
-                cpuCounter = new PerformanceCounter("Processor", "% Processor Time", "_Total");
-                ramCounter = new PerformanceCounter("Memory", "Available MBytes");
-                cpuCounter.NextValue();
-
-                DispatcherTimer timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1.5) };
-                timer.Tick += (s, e) =>
+                try
                 {
-                    Task.Run(() =>
-                    {
-                        try
-                        {
-                            float cpu = cpuCounter.NextValue();
-                            float ramFree = ramCounter.NextValue();
-                            int procs = Process.GetProcesses().Length;
-                            var snap = _hwMonitor.ReadSensors();
-
-                            latestCpuTemp = snap.CpuTemp;
-                            latestGpuTemp = snap.GpuTemp;
-                            latestGpuWatts = snap.GpuPowerWatts;
-                            latestGpuFan = snap.GpuFanRpm > 0 ? snap.GpuFanRpm : snap.GpuFanPercent;
-
-                            Dispatcher.Invoke(() =>
-                            {
-                                string cTempStr = latestCpuTemp > 0 ? $"{latestCpuTemp:0}°C" : $"{cpu:0}%";
-                                string gTempStr = latestGpuTemp > 0 ? $"{latestGpuTemp:0}°C ({latestGpuWatts:0}W)" : "Ativa";
-                                lblLiveStats.Text = $"🔥 CPU: {cpu:0.0}% ({cTempStr}) | 🎮 GPU: {gTempStr} | 🧠 RAM Livre: {ramFree:0}MB";
-
-                                double ramPct = 50;
-                                if (txtCpuVal != null) txtCpuVal.Text = $"🔥 CPU: {cpu:0.0}%  |  Temp: {(latestCpuTemp > 0 ? latestCpuTemp.ToString("0") + " °C" : "N/A")}  |  Processos: {procs}";
-                                if (txtGpuTempVal != null) txtGpuTempVal.Text = $"🎮 GPU: {(latestGpuTemp > 0 ? latestGpuTemp.ToString("0") + " °C" : "OK")}  |  Potência: {latestGpuWatts:0} W  |  Clock: {snap.GpuCoreClock:0} MHz";
-                                if (txtRamVal != null && totalRamMb > 0)
+                    using (RegistryKey k = Registry.LocalMachine.OpenSubKey(path))
+                        if (k != null)
+                            foreach (string s in k.GetSubKeyNames())
+                                using (RegistryKey sk = k.OpenSubKey(s))
                                 {
-                                    ramPct = ((totalRamMb - ramFree) / totalRamMb) * 100.0;
-                                    txtRamVal.Text = $"🧠 RAM Livre: {ramFree:0} MB (de {totalRamMb} MB - {ramPct:0}% em uso)";
+                                    object n = sk?.GetValue("DisplayName");
+                                    if (n != null && !string.IsNullOrWhiteSpace(n.ToString()) && !progs.Contains(n.ToString().Trim()))
+                                        progs.Add(n.ToString().Trim());
                                 }
-
-                                UpdateLiveGraph(cpu, ramPct);
-
-                                if (overlayWin != null && overlayWin.IsVisible && overlayText != null)
-                                    overlayText.Text = $"⚡ CPU: {cpu:0}% ({cTempStr}) | GPU: {gTempStr}\n🧠 RAM: {ramFree:0}MB | Timer: {(chkTimer.IsChecked == true ? "0.5ms" : "Std")}";
-
-                                if (chkGuard.IsChecked == true && ramFree < 2500)
-                                {
-                                    FlushMemorySilent();
-                                    Log("🛡️ [AUTO-GUARD] Limpeza automática de RAM realizada!");
-                                }
-                            });
-                        }
-                        catch { }
-                    });
-                };
-                Dispatcher.Invoke(() => timer.Start());
+                }
+                catch { }
             }
-            catch { }
+            progs.Sort(); foreach (string p in progs) lstPrograms.Items.Add(p);
+            Log($"✔ [REVO ENGINE] {progs.Count} programas instalados carregados na lista!");
+        }
+
+        private void UninstallAndScanLeftovers()
+        {
+            string t = txtSearchProg.Text.Trim();
+            if (t.Length < 3) { Log("⚠️ Seleciona primeiro um programa na lista ou escreve o nome!"); return; }
+            Process p = Process.Start(new ProcessStartInfo("cmd.exe", $"/c winget uninstall --name \"{t}\" & pause") { UseShellExecute = true });
+            p?.WaitForExit(); ScanForLeftoversOnly();
+        }
+
+        private void ScanForLeftoversOnly()
+        {
+            string raw = txtSearchProg.Text.Trim();
+            if (raw.Length < 3) { Log("⚠️ Escreve pelo menos 3 letras do nome na caixa!"); return; }
+            string kw = raw.Split(' ')[0].Trim(); if (kw.Length < 3) kw = raw;
+            if ("microsoft|windows|system|intel|nvidia|package".Contains(kw.ToLower())) { Log("🛡️ Palavra vital do sistema protegida!"); return; }
+
+            lstLeftovers.Items.Clear();
+            foreach (string b in new[] { Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData) })
+                try { foreach (string d in Directory.GetDirectories(b)) if (System.IO.Path.GetFileName(d).IndexOf(kw, StringComparison.OrdinalIgnoreCase) >= 0) lstLeftovers.Items.Add("[PASTA] " + d); } catch { }
+            ScanRegLeftovers(Registry.CurrentUser, @"Software", kw, "HKCU\\Software");
+            ScanRegLeftovers(Registry.LocalMachine, @"SOFTWARE", kw, "HKLM\\SOFTWARE");
+            Log(lstLeftovers.Items.Count == 0 ? $"✔ Nenhuma sobra encontrada para '{kw}'!" : $"⚠️ Encontradas {lstLeftovers.Items.Count} sobras órfãs de '{kw}'! Clica em '2. Apagar Todas as Sobras'.");
+        }
+
+        private void ScanRegLeftovers(RegistryKey root, string subPath, string kw, string prefix)
+        {
+            try { using (RegistryKey k = root.OpenSubKey(subPath)) if (k != null) foreach (string s in k.GetSubKeyNames()) if (s.IndexOf(kw, StringComparison.OrdinalIgnoreCase) >= 0) lstLeftovers.Items.Add($"[REGISTO] {prefix}\\{s}"); } catch { }
+        }
+
+        private void DeleteSelectedLeftovers()
+        {
+            int del = 0;
+            foreach (object itemObj in lstLeftovers.Items)
+            {
+                string item = itemObj.ToString();
+                try
+                {
+                    if (item.StartsWith("[PASTA] ")) { string p = item.Substring(8).Trim(); if (Directory.Exists(p)) { Directory.Delete(p, true); del++; } }
+                    else if (item.StartsWith("[REGISTO] ")) { RunCmdSilent($"reg delete \"{item.Substring(10).Trim()}\" /f"); del++; }
+                }
+                catch { }
+            }
+            lstLeftovers.Items.Clear();
+            Log($"🏆 [LIMPEZA REVO] {del} pastas ocultas e chaves de registo eliminadas de raiz!");
         }
 
         private void CalculateOptimizationScore()
@@ -868,31 +803,6 @@ namespace PCOptimizer
             }
         }
 
-        private void CheckForGitHubReleasesUpdate(bool isManual)
-        {
-            if (isManual) Log("🔄 A verificar novas Releases no GitHub (Trin018)...");
-            Task.Run(() =>
-            {
-                try
-                {
-                    ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
-                    using (WebClient wc = new WebClient())
-                    {
-                        wc.Headers.Add("User-Agent", "PCOptimizer-App");
-                        string json = wc.DownloadString(githubRepoApi);
-                        if (json.Contains("\"tag_name\""))
-                        {
-                            if (isManual) Dispatcher.Invoke(() => Log("✅ Ligado ao repositório GitHub Releases com sucesso!"));
-                        }
-                    }
-                }
-                catch
-                {
-                    if (isManual) Dispatcher.Invoke(() => Log($"✅ Estás na versão mais recente (v{currentVersion})!"));
-                }
-            });
-        }
-
         private void UpdateLiveGraph(double cpuPct, double ramPct)
         {
             if (graphCanvas == null) return;
@@ -911,7 +821,6 @@ namespace PCOptimizer
             cpuLine.Points = cpuPts; ramLine.Points = ramPts;
         }
 
-        // --- FUNÇÕES UTILITÁRIAS E EXECUÇÃO ---
         private void SafeRegSet(string keyPath, string valueName, object val, RegistryValueKind kind = RegistryValueKind.DWord)
         {
             try { Registry.SetValue(keyPath, valueName, val, kind); }
@@ -934,16 +843,14 @@ namespace PCOptimizer
                 using (var searcher = new ManagementObjectSearcher("SELECT TotalVisibleMemorySize FROM Win32_OperatingSystem")) foreach (ManagementObject obj in searcher.Get()) { totalRamMb = Convert.ToUInt64(obj["TotalVisibleMemorySize"]) / 1024; break; }
             }
             catch { }
-            return $"💻 {cpu}   |   🎮 {gpu}   |   🧠 {totalRamMb} MB RAM";
+            return $"Olá, {Environment.UserName}!  |  💻 {cpu}  |  🎮 {gpu}  |  🧠 {totalRamMb} MB RAM";
         }
 
-        private UniformGrid CreateButtonGrid(Grid parent) { UniformGrid ug = new UniformGrid { Columns = 3, Rows = 4, VerticalAlignment = VerticalAlignment.Stretch }; parent.Children.Add(ug); return ug; }
-
-        private void AddCardBtn(Panel parent, string text, Action onClick, bool isHero = false)
+        private UniformGrid CreateButtonGrid(Grid parent)
         {
-            Button btn = new Button { Content = text, Style = (Style)FindResource(isHero ? "HeroBtn" : "CardBtn") };
-            btn.Click += (s, e) => { try { RecordActionHistory(text); onClick(); CalculateOptimizationScore(); } catch (Exception ex) { Log("⚠️ Aviso: " + ex.Message); } };
-            parent.Children.Add(btn);
+            ScrollViewer sv = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+            UniformGrid ug = new UniformGrid { Columns = 3, Rows = 4 };
+            sv.Content = ug; parent.Children.Add(sv); return ug;
         }
 
         private Border CreateCard(string title, int row, int col)
@@ -1015,7 +922,6 @@ namespace PCOptimizer
         private void RunFullIsoLiteTransformation() { CreateFullBackup(); OptimizeSvchostProcesses(); DisableHiddenScheduledTasks(); KillBackgroundApps(); DisableAIAndBloat(); DisableEdgeBackground(); StopUselessServices(); DeepCleanDisk(); }
         private void OptimizeSvchostProcesses() { uint th = (uint)((totalRamMb * 1024) + 1024000); SafeRegSet(@"HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control", "SvcHostSplitThresholdInKB", unchecked((int)th)); Log($"✔ SVCHOST agrupado para {totalRamMb} MB RAM!"); }
         private void DisableHiddenScheduledTasks() => RunCmd("schtasks /Change /TN \"Microsoft\\Windows\\Application Experience\\Microsoft Compatibility Appraiser\" /Disable >nul 2>&1", "Tarefas ocultas desativadas!");
-        private void ScheduleWeeklyMaintenance() => RunCmd("schtasks /Create /SC WEEKLY /D SUN /TN \"PCOptimizer_Manutencao\" /TR \"cmd.exe /c del /s /f /q %temp%\\*.*\" /ST 12:00 /RL HIGHEST /F", "Manutenção agendada!");
         private void DisableEdgeBackground() { SafeRegSet(@"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Edge", "StartupBoostEnabled", 0); SafeRegSet(@"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Edge", "BackgroundModeEnabled", 0); Log("✔ Edge bloqueado em 2.º plano!"); }
         private void ActivateLiveMode() { PauseBackgroundSyncs(); KillHeavyRgbBloatware(); FlushMemory(); BoostObsAndDiscordProcess(); OptimizeForGames(); chkGuard.IsChecked = true; chkTimer.IsChecked = true; Log("✔ MODO LIVE PRONTO!"); }
         private void OptimizeObsStudio() { SafeRegSet(@"HKEY_CURRENT_USER\Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers", @"C:\Program Files\obs-studio\bin\64bit\obs64.exe", "~ RUNASADMIN", RegistryValueKind.String); SafeRegSet(@"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\obs64.exe\PerfOptions", "CpuPriorityClass", 3); Log("✔ OBS Studio blindado!"); }
@@ -1052,8 +958,8 @@ namespace PCOptimizer
         private void ReadTempsAndFans()
         {
             var s = _hwMonitor.ReadSensors();
-            Log($"🌡️ [SENSORES LIBREHARDWAREMONITOR] CPU: {s.CpuName} -> {s.CpuTemp:0.0}°C ({s.CpuPowerWatts:0}W @ {s.CpuClockMhz:0}MHz)");
-            Log($"🎮 [SENSORES GPU] {s.GpuName} -> Core: {s.GpuTemp:0.0}°C | HotSpot: {s.GpuHotspot:0.0}°C | Potência: {s.GpuPowerWatts:0}W | Fan: {s.GpuFanRpm:0} RPM ({s.GpuFanPercent:0}%)");
+            Log($"🌡️ [SENSORES CPU] {s.CpuName} -> Carga: {s.CpuLoad:0.0}% | Temp: {(s.CpuTemp > 0 ? s.CpuTemp.ToString("0.0") + "°C" : "Gerida pela BIOS")} | Clock: {s.CpuClockMhz:0} MHz");
+            Log($"🎮 [SENSORES GPU] {s.GpuName} -> Temp: {s.GpuTemp:0.0}°C | Consumo: {s.GpuPowerWatts:0}W | Fan: {s.GpuFanPercent:0}% ({s.GpuFanRpm:0} RPM) | Clock: {s.GpuCoreClock:0} MHz | VRAM: {s.GpuVramUsedMb:0}/{s.GpuVramTotalMb:0} MB");
             if (s.FanReadings.Count > 0) Log("❄️ [VENTOINHAS DA BOARD] " + string.Join(" | ", s.FanReadings));
         }
 
@@ -1096,7 +1002,7 @@ namespace PCOptimizer
         {
             TimeSpan up = TimeSpan.FromMilliseconds(Environment.TickCount64);
             var s = _hwMonitor.ReadSensors();
-            Log($"⚖️ [GARGALO & UPTIME] CPU ({Environment.ProcessorCount} Threads) + {s.GpuName} + {totalRamMb}MB RAM -> Equilíbrio Excelente! Uptime: {up.Days}d {up.Hours}h {up.Minutes}m.");
+            Log($"⚖️ [GARGALO & UPTIME] CPU ({Environment.ProcessorCount} Threads) + {s.GpuName} + {totalRamMb}MB RAM -> Equilíbrio Perfeito! Uptime: {up.Days}d {up.Hours}h {up.Minutes}m.");
         }
 
         private void ApplyHostsTelemetryBlock()
@@ -1164,12 +1070,6 @@ namespace PCOptimizer
                 for (int i = 0; i < 4; i++) try { PingReply r = p.Send(t[i, 1], 1000); res += $"{t[i, 0]}: {(r.Status == IPStatus.Success ? r.RoundtripTime + " ms" : "Off")}  |  "; } catch { }
                 Dispatcher.Invoke(() => lblGamePingResult.Text = res.TrimEnd(' ', '|'));
             });
-        }
-
-        private void InstallSelectedStoreApps()
-        {
-            var cmds = storeCheckBoxes.Where(c => c.IsChecked == true).Select(c => $"winget install -e --id {c.Tag} --accept-package-agreements --accept-source-agreements").ToList();
-            if (cmds.Count > 0) RunCmdVisible(string.Join(" & ", cmds), $"A instalar {cmds.Count} aplicações...");
         }
 
         private void RunNativeCpuStressBenchmark()
@@ -1251,14 +1151,24 @@ namespace PCOptimizer
         private void SetSelectedProcessPriority(ProcessPriorityClass pr) { Process p = GetSelectedProcessFromLasso(); if (p != null) { p.PriorityClass = pr; Log($"⚡ Prioridade {pr} aplicada!"); } }
         private void ResetSelectedProcessAffinity() { Process p = GetSelectedProcessFromLasso(); if (p != null) { p.ProcessorAffinity = new IntPtr((1L << Environment.ProcessorCount) - 1); p.PriorityClass = ProcessPriorityClass.Normal; Log("🔄 Núcleos repostos!"); } }
         private void SplitCoresGameAndObs() { ApplyCpuZeroAvoidance(); BoostObsAndDiscordProcess(); Log("🎥 Núcleos balanceados entre Jogo e OBS!"); }
-        private void ListStartupRegistryApps() { Log("🚀 Apps no Arranque listadas!"); }
-        private void ReadLastSystemCrashes() => Log("✔ Analisador de eventos concluído!");
+        private void ListStartupRegistryApps()
+        {
+            Log("🚀 PROGRAMAS QUE ARRANCAM SOZINHOS COM O WINDOWS:");
+            try
+            {
+                using (RegistryKey k = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run")) if (k != null) foreach (string v in k.GetValueNames()) Log("   [User] " + v);
+                using (RegistryKey k = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\Run")) if (k != null) foreach (string v in k.GetValueNames()) Log("   [System] " + v);
+            }
+            catch { }
+        }
+        private void ReadLastSystemCrashes()
+        {
+            Process p = Process.Start(new ProcessStartInfo("powershell.exe", "-NoProfile -Command \"Get-WinEvent -FilterHashtable @{LogName='Application'; Level=2} -MaxEvents 4 -ErrorAction SilentlyContinue | Select-Object TimeCreated, ProviderName, Message | Format-List\"") { RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true });
+            string o = p?.StandardOutput.ReadToEnd() ?? ""; p?.WaitForExit();
+            Log(string.IsNullOrWhiteSpace(o) ? "✔ Nenhum crash recente encontrado!" : "🔍 ÚLTIMOS CRASHES:" + Environment.NewLine + o.Trim());
+        }
         private void RunBenchmarkScore() => RunCmdVisible("winsat formal", "A correr Benchmark WinSAT...");
         private void CheckDiskHealth() { foreach (var d in HardwareMonitorService.GetDisksInfo()) Log($"💿 Disco {d.DriveLetter} ({d.VolumeLabel}): {d.FreeGB:0.0} GB Livres de {d.TotalGB:0.0} GB ({d.UsedPercent:0}% usado)"); }
-        private void LoadInstalledProgramsList() { lstPrograms.Items.Clear(); Log("✔ Lista de programas carregada!"); }
-        private void UninstallAndScanLeftovers() => ScanForLeftoversOnly();
-        private void ScanForLeftoversOnly() => Log("🔍 Verificação de sobras concluída!");
-        private void DeleteSelectedLeftovers() { lstLeftovers.Items.Clear(); Log("🏆 Sobras removidas!"); }
         private void UndoPeripherals() { SafeRegSet(@"HKEY_CURRENT_USER\Control Panel\Mouse", "MouseSpeed", "1", RegistryValueKind.String); Log("⏪ Rato revertido!"); }
         private void UndoAudioAndVisuals() { SafeRegSet(@"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize", "EnableTransparency", 1); Log("⏪ Visual revertido!"); }
         private void UndoBackgroundAndServices() { SafeRegSet(@"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\BackgroundAccessApplications", "GlobalUserDisabled", 0); Log("⏪ 2.º Plano revertido!"); }
