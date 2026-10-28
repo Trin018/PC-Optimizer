@@ -745,8 +745,8 @@ namespace PCOptimizer
 
                             string remoteClean = remoteTagFull.TrimStart('v', 'V').Trim();
                             
-                            // FORÇAR TESTE: Se for manual, vamos assumir versão local velha para o pop-up saltar SEMPRE!
-                            string localClean = isManual ? "1.0.0" : currentVersion.TrimStart('v', 'V').Trim();
+                            // Usar sempre a versão real do assembly, mesmo quando a verificação é manual.
+                            string localClean = currentVersion.TrimStart('v', 'V').Trim();
 
                             Dispatcher.Invoke(() =>
                             {
@@ -762,7 +762,7 @@ namespace PCOptimizer
                             else
                                 isNewer = string.Compare(remoteClean, localClean, StringComparison.OrdinalIgnoreCase) > 0;
 
-                            if (!string.IsNullOrWhiteSpace(downloadUrl) && (isNewer || isManual))
+                            if (!string.IsNullOrWhiteSpace(downloadUrl) && isNewer)
                             {
                                 Dispatcher.Invoke(() =>
                                 {
