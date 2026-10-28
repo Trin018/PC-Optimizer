@@ -22,7 +22,7 @@ jobs:
         dotnet-version: '8.0.x'
 
     - name: Compilar Projeto (Formato Transparente sem Falso Positivo)
-      run: dotnet publish PCOptimizer.csproj -c Release -r win-x64 --self-contained false -o ./publish
+      run: dotnet publish PCOptimizer.csproj -c Release -r win-x64 --self-contained false -p:Version=15.0.${{ github.run_number }} -o ./publish
 
     - name: Criar Ficheiro ZIP
       shell: pwsh

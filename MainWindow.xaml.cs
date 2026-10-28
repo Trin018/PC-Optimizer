@@ -747,9 +747,20 @@ namespace PCOptimizer
                             string remoteClean = remoteTagFull.TrimStart('v', 'V').Trim();
                             string localClean = currentVersion.TrimStart('v', 'V').Trim();
 
-                            if (string.Compare(remoteClean, localClean, StringComparison.OrdinalIgnoreCase) <= 0 && !isManual)
+                            // Compare numeric version components, not text (e.g. 15.0.17 > 15.0.9).
+                            bool hasValidRemoteVersion = Version.TryParse(remoteClean, out Version remoteVersion);
+                            bool hasValidLocalVersion = Version.TryParse(localClean, out Version localVersion);
+
+                            if (!isManual && hasValidRemoteVersion && hasValidLocalVersion && remoteVersion <= localVersion)
                             {
-                                return; 
+                                return;
+                            }
+
+                            // If either version cannot be parsed, do not silently treat it as up-to-date.
+                            if (!isManual && (!hasValidRemoteVersion || !hasValidLocalVersion))
+                            {
+                                Dispatcher.Invoke(() => Log($"⚠️ Não foi possível comparar as versões: local '{localClean}', remota '{remoteClean}'."));
+                                return;
                             }
 
                             if (!string.IsNullOrWhiteSpace(downloadUrl) && (_hasSkippedOrUpdated ? isManual : true))
