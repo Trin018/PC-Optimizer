@@ -2,7 +2,7 @@ name: Build PC_Optimizer ZIP
 
 on:
   push:
-    branches: [ "main", "master" ]
+    branches: [ "main", "master", "fix/dotnet-run-compilation" ]
   workflow_dispatch:
 
 permissions:
@@ -22,14 +22,23 @@ jobs:
         dotnet-version: '8.0.x'
 
     - name: Compilar Projeto (Formato Transparente sem Falso Positivo)
-      run: dotnet publish PCOptimizer.csproj -c Release -r win-x64 --self-contained false -p:Version=15.0.${{ github.run_number }} -o ./publish
+      run: dotnet publish PCOptimizer.csproj -c Release -r win-x64 --self-contained false -p:Version=15.0.${{ github.run_number }} -p:AssemblyVersion=15.0.${{ github.run_number }} -p:FileVersion=15.0.${{ github.run_number }} -p:InformationalVersion=15.0.${{ github.run_number }} -o ./publish
 
     - name: Criar Ficheiro ZIP
       shell: pwsh
       run: |
         Compress-Archive -Path ./publish/* -DestinationPath ./publish/PC_Optimizer.zip
 
+    - name: Guardar ZIP de teste (branch de correção)
+      if: github.ref != 'refs/heads/main' && github.ref != 'refs/heads/master'
+      uses: actions/upload-artifact@v4
+      with:
+        name: PC_Optimizer-test-build-${{ github.run_number }}
+        path: ./publish/PC_Optimizer.zip
+        if-no-files-found: error
+
     - name: Publicar Release no GitHub
+      if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
       uses: softprops/action-gh-release@v2
       with:
         tag_name: v15.0.${{ github.run_number }}
