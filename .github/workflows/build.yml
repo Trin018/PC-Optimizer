@@ -29,7 +29,16 @@ jobs:
       run: |
         Compress-Archive -Path ./publish/* -DestinationPath ./publish/PC_Optimizer.zip
 
+    - name: Guardar ZIP de teste (branch de correção)
+      if: github.ref != 'refs/heads/main' && github.ref != 'refs/heads/master'
+      uses: actions/upload-artifact@v4
+      with:
+        name: PC_Optimizer-test-build-${{ github.run_number }}
+        path: ./publish/PC_Optimizer.zip
+        if-no-files-found: error
+
     - name: Publicar Release no GitHub
+      if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
       uses: softprops/action-gh-release@v2
       with:
         tag_name: v15.0.${{ github.run_number }}
