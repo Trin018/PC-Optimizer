@@ -805,6 +805,7 @@ namespace PCOptimizer
             });
         }
 
+
         private void LoadInstalledProgramsList()
         {
             lstPrograms.Items.Clear();
@@ -1276,8 +1277,8 @@ namespace PCOptimizer
         private void UndoGamingAndTimers() { chkGuard.IsChecked = false; chkTimer.IsChecked = false; Log("⏪ Timers revertidos!"); }
         private void UndoNetworkSettings() { ResetDns(); Log("⏪ Rede revertida!"); }
         private void UndoEverythingPanicButton() { UndoPeripherals(); UndoAudioAndVisuals(); UndoBackgroundAndServices(); UndoGamingAndTimers(); UndoNetworkSettings(); RemovePermanentVipGames(); ResetHostsFile(); Log("🏆 Tudo restaurado para o original da Microsoft!"); }
-    
- // =========================================================================
+
+        // =========================================================================
         // MOTOR DE DRIVERS (ESTILO IOBIT / DRIVER BOOSTER - 100% LIMPO E OFICIAL)
         // =========================================================================
         private void ScanForOfficialDrivers()
@@ -1290,7 +1291,7 @@ namespace PCOptimizer
                     Type updateSessionType = Type.GetTypeFromProgID("Microsoft.Update.Session");
                     dynamic updateSession = Activator.CreateInstance(updateSessionType);
                     dynamic searcher = updateSession.CreateUpdateSearcher();
-                    searcher.ServerSelection = 2; // Catálogo oficial do Windows Update
+                    searcher.ServerSelection = 2;
 
                     dynamic searchResult = searcher.Search("IsInstalled=0 and Type='Driver'");
                     int count = searchResult.Updates.Count;
@@ -1365,6 +1366,64 @@ namespace PCOptimizer
             Log("💾 A criar cópia de segurança completa de todos os drivers em C:\\PCOptimizer_Backups\\Drivers...");
             string backupPath = @"C:\PCOptimizer_Backups\Drivers";
             RunCmdVisible("md \"" + backupPath + "\" >nul 2>&1 & pnputil /export-driver * \"" + backupPath + "\"", "Exportação de drivers com pnputil concluída!");
+        }
+
+        // =========================================================================
+        // MOTOR DE AUTO-UPDATE (DESCARREGA ZIP, EXTRAI E SUBSTITUI O EXE)
+        // =========================================================================
+        private void DownloadAndApplyUpdate(string downloadUrl, string newTag)
+        {
+            try
+            {
+                Log($"⏳ [AUTO-UPDATE] A descarregar a nova versão ({newTag})...");
+                string currentExePath = Process.GetCurrentProcess().MainModule.FileName;
+                string currentDir = AppDomain.CurrentDomain.BaseDirectory;
+                string tempDir = System.IO.Path.GetTempPath();
+                string zipPath = System.IO.Path.Combine(tempDir, "pcopt_update.zip");
+                string extractFolder = System.IO.Path.Combine(tempDir, "pcopt_extracted");
+                string batUpdater = System.IO.Path.Combine(tempDir, "update_runner.bat");
+
+                if (Directory.Exists(extractFolder)) Directory.Delete(extractFolder, true);
+                Directory.CreateDirectory(extractFolder);
+
+                using (WebClient wc = new WebClient())
+                {
+                    wc.DownloadFile(downloadUrl, zipPath);
+                }
+
+                Log("📦 A extrair os novos ficheiros...");
+
+                string batContent = 
+                    "@echo off\r\n" +
+                    "echo A atualizar o PC Optimizer...\r\n" +
+                    ":wait\r\n" +
+                    "taskkill /f /im PC_Optimizer.exe >nul 2>&1\r\n" +
+                    "timeout /t 1 /nobreak >nul\r\n" +
+                    "tasklist | find /i \"PC_Optimizer.exe\" >nul\r\n" +
+                    "if not errorlevel 1 goto wait\r\n" +
+                    $"powershell -Command \"Expand-Archive -Path '{zipPath}' -DestinationPath '{extractFolder}' -Force\"\r\n" +
+                    $"xcopy /y /s /q \"{extractFolder}\\*.*\" \"{currentDir}\"\r\n" +
+                    $"start \"\" \"{currentExePath}\"\r\n" +
+                    $"del \"{zipPath}\" >nul 2>&1\r\n" +
+                    $"rd /s /q \"{extractFolder}\" >nul 2>&1\r\n" +
+                    "del \"%~f0\"";
+
+                File.WriteAllText(batUpdater, batContent);
+
+                ProcessStartInfo psi = new ProcessStartInfo(batUpdater)
+                {
+                    UseShellExecute = true,
+                    Verb = "runas",
+                    WindowStyle = ProcessWindowStyle.Hidden
+                };
+                Process.Start(psi);
+                Environment.Exit(0);
+            }
+            catch (Exception ex)
+            {
+                Log("❌ Erro ao atualizar: " + ex.Message);
+                MessageBox.Show("Erro ao efetuar a atualização automática: " + ex.Message, "Erro de Update", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
         }
     }
 }
